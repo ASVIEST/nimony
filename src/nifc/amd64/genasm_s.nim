@@ -9,11 +9,12 @@
 
 # included from genpreasm.nim
 
-proc genEmitStmt(c: var GeneratedCode; n: Cursor) =
+proc genEmitStmt(c: var GeneratedCode; n: var Cursor) =
   error c.m, "'emit' statement is not supported", n
 
-proc genStmt(c: var GeneratedCode; t: Tree; n: NodePos)
+proc genStmt(c: var GeneratedCode; n: var Cursor)
 
+#[
 proc genBreak(c: var GeneratedCode; t: Tree; n: NodePos) =
   # XXX Needs to `kill` locals here?
   if c.loopExits.len == 0:
@@ -94,7 +95,7 @@ proc genGoto(c: var GeneratedCode; t: Tree; n: NodePos) =
       c.addSym name, t[dname].info
   else:
     error c.m, "expected Symbol but got: ", t, n
-
+]#
 # XXX `case` not implemented
 
 #[
@@ -367,30 +368,37 @@ proc genGlobalVar(c: var GeneratedCode; t: Tree; n: NodePos) =
       # generate the assignment:
       genx c, t, v.value, d
 
-proc genStmt(c: var GeneratedCode; t: Tree; n: NodePos) =
-  case t[n].kind
-  of Empty:
-    discard
-  of StmtsC, ScopeC:
-    for ch in sons(t, n):
-      genStmt(c, t, ch)
-  of CallC:
+proc genStmt(c: var GeneratedCode; n var Cursor) =
+  case n.stmtKind
+  of NoStmt:
+    if n.kind == DotToken:
+      inc n
+    else:
+      error c.m, "expected statement but got: ", n
+  of StmtsS, ScopeS:
+    inc n
+    while n.kind != ParRi:
+      genStmt(c, n)
+    inc n # ParRi
+  of CallS:
     var d = Location(kind: Undef)
-    genCall c, t, n, d
+    # genCall c, n, d
   of VarC:
-    genLocalVar c, t, n
+    discard
+    # genLocalVar c, t, n
   of GvarC, TvarC, ConstC:
-    moveToDataSection:
-      genGlobalVar c, t, n
+    discard
+    # moveToDataSection:
+    #   genGlobalVar c, t, n
   #of EmitC:
   #  genEmitStmt c, t, n
-  of AsgnC: genAsgn c, t, n
-  of IfC: genIf c, t, n
-  of WhileC: genWhile c, t, n
-  of BreakC: genBreak c, t, n
-  #of CaseC: genSwitch c, t, n
-  of LabC: genLabel c, t, n
-  of JmpC: genGoto c, t, n
-  of RetC: genReturn c, t, n
+  # of AsgnC: genAsgn c, t, n
+  # of IfC: genIf c, t, n
+  # of WhileC: genWhile c, t, n
+  # of BreakC: genBreak c, t, n
+  # of CaseC: genSwitch c, t, n
+  # of LabC: genLabel c, t, n
+  # of JmpC: genGoto c, t, n
+  # of RetC: genReturn c, t, n
   else:
     error c.m, "expected statement but got: ", t, n
