@@ -50,12 +50,18 @@ type
 proc initGeneratedCode*(m: sink Module; intmSize: int): GeneratedCode =
   result = GeneratedCode(m: m, intmSize: intmSize)
 
-proc error(m: Module; msg: string; tree: PackedTree[NifcKind]; n: NodePos) {.noreturn.} =
+proc error(m: Module; msg: string; n: Cursor) {.noreturn.} =
+  let info = n.info
+  if info.isValid:
+    let rawInfo = unpack(pool.man, info)
+    if rawInfo.file.isValid:
+      write stdout, pool.files[rawInfo.file]
+      write stdout, "(" & $rawInfo.line & ", " & $(rawInfo.col+1) & ") "
   write stdout, "[Error] "
   write stdout, msg
-  writeLine stdout, toString(tree, n, m)
+  writeLine stdout, toString(n, false)
   when defined(debug):
-    writeStackTrace()
+    echo getStackTrace()
   quit 1
 
 # Atoms
@@ -306,12 +312,13 @@ proc genToplevel(c: var GeneratedCode; n: var Cursor) =
   else:
     error c.m, "expected top level construct but got: ", n
 
-proc traverseCode(c: var GeneratedCode; t: Tree; n: NodePos) =
-  case t[n].kind
-  of StmtsC:
-    for ch in sons(t, n): genToplevel(c, t, ch)
+proc traverseCode(c: var GeneratedCode; n: var Cursor) =
+  if n.stmtKind == StmtsS:
+    inc n
+    while n.kind != ParRi: genToplevel(c, n)
+    # missing `inc n` here is intentional
   else:
-    error c.m, "expected `stmts` but got: ", t, n
+    error c.m, "expected `stmts` but got: ", n
 
 proc generateAsm*(inp, outp: string) =
   registerTags()
@@ -322,7 +329,8 @@ proc generateAsm*(inp, outp: string) =
 
   generateTypes(c, co)
 
-  traverseCode c, c.m.code, StartPos
+  var n = beginRead(c.m.src)
+  traverseCode c, n
   var f = ""
   f.add "(.nif24)\n(stmts"
   f.add toString(c.data)
