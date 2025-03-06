@@ -281,22 +281,30 @@ proc genProcDecl(c: var GeneratedCode; t: Tree; n: NodePos) =
     c.fixupProlog()
   c.closeScope() # close parameter scope
 
-proc genToplevel(c: var GeneratedCode; t: Tree; n: NodePos) =
+proc genToplevel(c: var GeneratedCode; n: var Cursor) =
   # ExternDecl ::= (imp ProcDecl | VarDecl | ConstDecl)
   # Include ::= (incl StringLiteral)
   # TopLevelConstruct ::= ExternDecl | ProcDecl | VarDecl | ConstDecl |
   #                       TypeDecl | Include | EmitStmt
-  case t[n].kind
-  of ImpC: discard "ignore imp"
-  of NodeclC: discard "ignore nodecl"
-  of InclC: discard "genInclude c, t, n"
-  of ProcC: genProcDecl c, t, n
-  of VarC: genStmt c, t, n
-  of ConstC: genStmt c, t, n
-  of TypeC: discard "handled in a different pass"
-  of EmitC: genEmitStmt c, t, n
+  case n.stmtKind
+  of ImpS:
+    discard "ignore imp"
+    skip n
+  of NodeclS:
+    discard "ignore nodecl"
+    skip n
+  of InclS:
+    discard "genInclude c, n"
+    skip n
+  of ProcS: discard genProcDecl c, n
+  of VarS: genStmt c, n
+  of ConstC: genStmt c, n
+  of TypeS:
+    discard "handled in a different pass"
+    skip n
+  of EmitS: genEmitStmt c, n
   else:
-    error c.m, "expected top level construct but got: ", t, n
+    error c.m, "expected top level construct but got: ", n
 
 proc traverseCode(c: var GeneratedCode; t: Tree; n: NodePos) =
   case t[n].kind
