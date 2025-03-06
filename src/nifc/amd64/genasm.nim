@@ -180,13 +180,13 @@ proc genProcPragmas(c: var GeneratedCode; n: var Cursor;
   else:
     error c.m, "expected proc pragmas but got: ", n
 
-proc genSymDef(c: var GeneratedCode; t: Tree; n: NodePos): string =
-  if t[n].kind == SymDef:
-    let lit = t[n].litId
-    result = c.m.lits.strings[lit]
+proc genSymDef(c: var GeneratedCode; n: Cursor): string =
+  if n.kind == SymbolDef:
+    let lit = n.symId
+    result = pool.syms[lit]
     c.code.addSymDef result, t[n].info
   else:
-    error c.m, "expected SymbolDef but got: ", t, n
+    error c.m, "expected SymbolDef but got: ", n
     result = ""
 
 proc genParamPragmas(c: var GeneratedCode; t: Tree; n: NodePos) =
