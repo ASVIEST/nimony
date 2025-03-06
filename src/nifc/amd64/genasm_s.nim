@@ -9,8 +9,8 @@
 
 # included from genpreasm.nim
 
-proc genEmitStmt(c: var GeneratedCode; t: Tree; n: NodePos) =
-  error c.m, "'emit' statement is not supported", t, n
+proc genEmitStmt(c: var GeneratedCode; n: Cursor) =
+  error c.m, "'emit' statement is not supported", n
 
 proc genStmt(c: var GeneratedCode; t: Tree; n: NodePos)
 
