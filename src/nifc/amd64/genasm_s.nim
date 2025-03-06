@@ -259,6 +259,7 @@ proc getExitProcLabel(c: var GeneratedCode): Label =
     c.exitProcLabel = getLabel(c)
   result = c.exitProcLabel
 
+#[
 proc genReturn(c: var GeneratedCode; t: Tree; n: NodePos) =
   let retVal = n.firstSon
   #var d = resultWin64(getAsmSlot(c, retVal))
@@ -367,8 +368,8 @@ proc genGlobalVar(c: var GeneratedCode; t: Tree; n: NodePos) =
     if t[v.value].kind != Empty:
       # generate the assignment:
       genx c, t, v.value, d
-
-proc genStmt(c: var GeneratedCode; n var Cursor) =
+]#
+proc genStmt(c: var GeneratedCode; n: var Cursor) =
   case n.stmtKind
   of NoStmt:
     if n.kind == DotToken:
@@ -383,11 +384,13 @@ proc genStmt(c: var GeneratedCode; n var Cursor) =
   of CallS:
     var d = Location(kind: Undef)
     # genCall c, n, d
-  of VarC:
+    skip n
+  of VarS:
     discard
     # genLocalVar c, t, n
-  of GvarC, TvarC, ConstC:
-    discard
+    skip n
+  of GvarS, TvarS, ConstS:
+    skip n
     # moveToDataSection:
     #   genGlobalVar c, t, n
   #of EmitC:
@@ -401,4 +404,4 @@ proc genStmt(c: var GeneratedCode; n var Cursor) =
   # of JmpC: genGoto c, t, n
   # of RetC: genReturn c, t, n
   else:
-    error c.m, "expected statement but got: ", t, n
+    error c.m, "expected statement but got: ", n

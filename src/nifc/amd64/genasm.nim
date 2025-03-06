@@ -12,7 +12,7 @@
 import std / [assertions, syncio, tables, sets, intsets, strutils]
 from std / os import changeFileExt, splitFile, extractFilename
 
-import .. / .. / lib / [bitabs, packedtrees, lineinfos, nifstreams, nifcursors]
+import .. / .. / lib / [bitabs, lineinfos, nifstreams, nifcursors]
 import ".." / [nifc_model, typenav]
 import ".." / native / [slots, analyser]
 import asm_model, machine, emitter
@@ -22,6 +22,8 @@ type
   TempVar = distinct int
 
 type
+  LitId = StrId
+
   Scope = object
     vars: seq[LitId]
 
@@ -45,7 +47,7 @@ type
     exitProcLabel: Label
     globals: Table[LitId, Location]
 
-  LitId = nifc_model.StrId
+  # LitId = nifc_model.StrId
 
 proc initGeneratedCode*(m: sink Module; intmSize: int): GeneratedCode =
   result = GeneratedCode(m: m, intmSize: intmSize)
@@ -67,7 +69,7 @@ proc error(m: Module; msg: string; n: Cursor) {.noreturn.} =
 # Atoms
 
 proc genIntLit(c: var GeneratedCode; litId: LitId; info: PackedLineInfo) =
-  c.code.addIntLit parseBiggestInt(c.m.lits.strings[litId]), info
+  c.code.addIntLit parseBiggestInt(pool.strings[litId]), info
 
 proc genIntLit(c: var GeneratedCode; i: BiggestInt; info: PackedLineInfo) =
   c.code.addIntLit i, info
@@ -76,7 +78,7 @@ proc genIntLit(c: var TokenBuf; i: BiggestInt; info: PackedLineInfo) =
   c.addIntLit i, info
 
 proc genUIntLit(c: var GeneratedCode; litId: LitId; info: PackedLineInfo) =
-  let i = parseBiggestUInt(c.m.lits.strings[litId])
+  let i = parseBiggestUInt(pool.strings[litId])
   let id = pool.uintegers.getOrIncl(i)
   c.code.add uintToken(id, info)
 
@@ -85,7 +87,7 @@ proc genUIntLit(c: var GeneratedCode; i: BiggestUInt; info: PackedLineInfo) =
   c.code.add uintToken(id, info)
 
 proc genFloatLit(c: var GeneratedCode; litId: LitId; info: PackedLineInfo) =
-  let i = parseFloat(c.m.lits.strings[litId])
+  let i = parseFloat(pool.strings[litId])
   let id = pool.floats.getOrIncl(i)
   c.code.add floatToken(id, info)
 
@@ -141,7 +143,7 @@ proc defineLabel(c: var GeneratedCode; lab: Label; info: PackedLineInfo; opc = L
 
 # Type graph
 
-include genpreasm_t
+# include genpreasm_t
 
 # Procs
 
@@ -153,7 +155,7 @@ proc genWas(c: var GeneratedCode; n: var Cursor) =
 type
   ProcFlag = enum
     isSelectAny, isVarargs
-
+#[
 proc genProcPragmas(c: var GeneratedCode; n: var Cursor;
                     flags: var set[ProcFlag]) =
   # ProcPragma ::= (inline) | (noinline) | CallingConvention | (varargs) | (was Identifier) |
@@ -239,8 +241,9 @@ template moveToDataSection(body: untyped) =
   shrink c.code, oldLen
 
 include register_allocator
+]#
 include genasm_s
-
+#[
 proc genProcDecl(c: var GeneratedCode; t: Tree; n: NodePos) =
   c.labels = 0 # reset so that we produce nicer code
   c.exitProcLabel = Label(-1)
@@ -286,7 +289,8 @@ proc genProcDecl(c: var GeneratedCode; t: Tree; n: NodePos) =
     c.genEpilog()
     c.fixupProlog()
   c.closeScope() # close parameter scope
-
+]#
+# include genpreasm_t
 proc genToplevel(c: var GeneratedCode; n: var Cursor) =
   # ExternDecl ::= (imp ProcDecl | VarDecl | ConstDecl)
   # Include ::= (incl StringLiteral)
@@ -296,21 +300,21 @@ proc genToplevel(c: var GeneratedCode; n: var Cursor) =
   of ImpS:
     discard "ignore imp"
     skip n
-  of NodeclS:
-    discard "ignore nodecl"
-    skip n
   of InclS:
     discard "genInclude c, n"
     skip n
-  of ProcS: discard genProcDecl c, n
+  # of ProcS: discard genProcDecl c, n
   of VarS: genStmt c, n
-  of ConstC: genStmt c, n
+  of ConstS: genStmt c, n
   of TypeS:
     discard "handled in a different pass"
     skip n
   of EmitS: genEmitStmt c, n
   else:
-    error c.m, "expected top level construct but got: ", n
+    if n.pragmaKind == NodeclP:
+      skip n
+    else:
+      error c.m, "expected top level construct but got: ", n
 
 proc traverseCode(c: var GeneratedCode; n: var Cursor) =
   if n.stmtKind == StmtsS:
@@ -324,10 +328,10 @@ proc generateAsm*(inp, outp: string) =
   registerTags()
   var c = initGeneratedCode(load(inp), 8)
 
-  var co = TypeOrder()
-  traverseTypes(c.m, co)
+  # var co = TypeOrder()
+  # traverseTypes(c.m, co)
 
-  generateTypes(c, co)
+  # generateTypes(c, co)
 
   var n = beginRead(c.m.src)
   traverseCode c, n

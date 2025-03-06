@@ -11,7 +11,7 @@ import std / assertions
 import ".." / nifc_model
 import ".." / native / slots
 
-import nifstreams except StrId
+import nifstreams# except StrId
 
 type
   IntReg* = distinct byte
