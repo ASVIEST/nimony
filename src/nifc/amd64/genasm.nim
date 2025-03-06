@@ -176,6 +176,7 @@ proc genProcPragmas(c: var GeneratedCode; n: var Cursor;
         skip n
       else:
         error c.m, "invalid proc pragma: ", n
+    inc n # ParRi
   else:
     error c.m, "expected proc pragmas but got: ", n
 
