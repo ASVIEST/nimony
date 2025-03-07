@@ -270,16 +270,21 @@ proc genReturn(c: var GeneratedCode; t: Tree; n: NodePos) =
   # free the stack and we don't know yet how much stack we need!
   c.buildTreeI JmpT, t[n].info:
     c.useLabel lab, t[n].info
-
-proc genLocalVar(c: var GeneratedCode; t: Tree; n: NodePos) =
-  let v = asVarDecl(t, n)
-  assert t[v.name].kind == SymDef
-  let name = t[v.name].litId
-  assert c.locals.hasKey(name)
-  if t[v.value].kind != Empty:
+]#
+proc genLocalVar(c: var GeneratedCode; n: var Cursor) =
+  let v = takeVarDecl(n)
+  # assert t[v.name].kind == SymDef
+  echo "OK"
+  let name = v.name.symId
+  echo "ok"
+  c.m.registerLocal(name, v.typ)
+  # assert c.locals.hasKey(name)
+  # if t[v.value].kind != Empty:
     # generate the assignment:
-    genx c, t, v.value, c.locals[name]
+  n = v.value
+  genx c, n, c.locals[name]
 
+#[
 proc genConstData(c: var GeneratedCode; t: Tree; n: NodePos) =
   let info = t[n].info
   case t[n].kind
@@ -386,9 +391,8 @@ proc genStmt(c: var GeneratedCode; n: var Cursor) =
     # genCall c, n, d
     skip n
   of VarS:
-    discard
-    # genLocalVar c, t, n
-    skip n
+    genLocalVar c, n
+    # skip n
   of GvarS, TvarS, ConstS:
     skip n
     # moveToDataSection:

@@ -22,7 +22,7 @@ type
   TempVar = distinct int
 
 type
-  LitId = StrId
+  LitId = SymId
 
   Scope = object
     vars: seq[LitId]
@@ -41,7 +41,7 @@ type
     types: Table[LitId, AsmSlot]
     locals: Table[LitId, Location]
     strings: Table[string, int]
-    floats: Table[LitId, int]
+    floats: Table[StrId, int]
     scopes: seq[Scope]
     returnLoc: Location
     exitProcLabel: Label
@@ -68,7 +68,7 @@ proc error(m: Module; msg: string; n: Cursor) {.noreturn.} =
 
 # Atoms
 
-proc genIntLit(c: var GeneratedCode; litId: LitId; info: PackedLineInfo) =
+proc genIntLit(c: var GeneratedCode; litId: StrId; info: PackedLineInfo) =
   c.code.addIntLit parseBiggestInt(pool.strings[litId]), info
 
 proc genIntLit(c: var GeneratedCode; i: BiggestInt; info: PackedLineInfo) =
@@ -77,7 +77,7 @@ proc genIntLit(c: var GeneratedCode; i: BiggestInt; info: PackedLineInfo) =
 proc genIntLit(c: var TokenBuf; i: BiggestInt; info: PackedLineInfo) =
   c.addIntLit i, info
 
-proc genUIntLit(c: var GeneratedCode; litId: LitId; info: PackedLineInfo) =
+proc genUIntLit(c: var GeneratedCode; litId: StrId; info: PackedLineInfo) =
   let i = parseBiggestUInt(pool.strings[litId])
   let id = pool.uintegers.getOrIncl(i)
   c.code.add uintToken(id, info)
@@ -86,7 +86,7 @@ proc genUIntLit(c: var GeneratedCode; i: BiggestUInt; info: PackedLineInfo) =
   let id = pool.uintegers.getOrIncl(i)
   c.code.add uintToken(id, info)
 
-proc genFloatLit(c: var GeneratedCode; litId: LitId; info: PackedLineInfo) =
+proc genFloatLit(c: var GeneratedCode; litId: StrId; info: PackedLineInfo) =
   let i = parseFloat(pool.strings[litId])
   let id = pool.floats.getOrIncl(i)
   c.code.add floatToken(id, info)
@@ -230,9 +230,9 @@ proc genVarPragmas(c: var GeneratedCode; t: Tree; n: NodePos; alignOverride: var
         error c.m, "invalid pragma: ", t, ch
   else:
     error c.m, "expected pragmas but got: ", t, n
-
+]#
 include genasm_e
-
+#[
 template moveToDataSection(body: untyped) =
   let oldLen = c.code.len
   body
@@ -327,19 +327,21 @@ proc traverseCode(c: var GeneratedCode; n: var Cursor) =
 proc generateAsm*(inp, outp: string) =
   registerTags()
   var c = initGeneratedCode(load(inp), 8)
-
+  
   # var co = TypeOrder()
   # traverseTypes(c.m, co)
 
   # generateTypes(c, co)
 
   var n = beginRead(c.m.src)
+  c.m.openScope()
   traverseCode c, n
   var f = ""
   f.add "(.nif24)\n(stmts"
   f.add toString(c.data)
   f.add toString(c.code)
   f.add ")\n"
+  c.m.closeScope()
 
   when defined(debug):
     echo f

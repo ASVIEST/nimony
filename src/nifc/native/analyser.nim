@@ -27,12 +27,12 @@ type
     props*: set[VarProp]
 
   ProcBodyProps* = object
-    vars*: Table[StrId, VarInfo]
+    vars*: Table[SymId, VarInfo]
     inlineStructs*: bool # candidate for struct inlining
     hasCall*: bool
 
   Scope = object
-    vars: seq[StrId]
+    vars: seq[SymId]
     hasCall: bool
 
   Context = object
@@ -58,50 +58,53 @@ const
                  # to make the register allocator keep variables that are
                  # used in loops more important.
 
-# proc analyseVarUsages(c: var Context; n: var Cursor) =
-#   # Step 1. Analyse variable usages.
-#   if n.kind == DotToken:
-#     inc n
+proc analyseVarUsages(c: var Context; n: var Cursor) =
+  # Step 1. Analyse variable usages.
+  if n.kind == DotToken:
+    inc n
   
-#   case n.stmtkind
-#   of StmtsS, ScopeS:
-#     c.openScope()
-#     inc n
-#     while n.kind != ParRi: 
-#       analyseVarUsages(c, n)
-#     c.closeScope()
-#     inc n
-#   of VarS, GvarS, TvarS, ConstS:
-#     let v = takeVarDecl(n)
-#     assert v.name.kind == SymbolDef
-#     let lit = v.name.symId
-#     let hasValue = v.value.kind != DotToken
-#     c.res.vars[lit] = VarInfo(defs: ord(hasValue))
-#     c.scopes[^1].vars.add lit
-#     if hasValue:
-#       analyseVarUsages(c, v.value)
-#   of CallS, OnErrS:
-#     inc n
-#     while n.kind != ParRi:
-#       analyseVarUsages(c, n)
-#     c.scopes[^1].hasCall = true
-#   of AsgnS:
-#     inc n
-#     inc c.inAsgnTarget
-#     analanalyseVarUsages(c, n)
-#     dec c.inAsgnTarget
-#     analyseVarUsages(c, n)
-#   elif n.symKind != NoSym:
-#     let sk = n.symKind
-#     if sk == ParamY:
-#       # TODO: join with VarS etc.
-#       let d = takeParamDecl(n)
-#       assert d.name.kind == SymbolDef
-#       let lit = v.name.symId
-#       c.res.vars[lit] = VarInfo(defs: 1)
-#       c.scopes[^1].vars.add lit
-#     else:
-#       echo "SYM FOUND"
+  case n.stmtkind
+  of StmtsS, ScopeS:
+    c.openScope()
+    inc n
+    while n.kind != ParRi: 
+      analyseVarUsages(c, n)
+    c.closeScope()
+    inc n
+  of VarS, GvarS, TvarS, ConstS:
+    let v = takeVarDecl(n)
+    assert v.name.kind == SymbolDef
+    let lit = v.name.symId
+    let hasValue = v.value.kind != DotToken
+    c.res.vars[lit] = VarInfo(defs: ord(hasValue))
+    c.scopes[^1].vars.add lit
+    let oldN = n
+    n = v.value
+    if hasValue:
+      analyseVarUsages(c, n)
+    n = oldN
+  of CallS, OnErrS:
+    inc n
+    while n.kind != ParRi:
+      analyseVarUsages(c, n)
+    c.scopes[^1].hasCall = true
+  of AsgnS:
+    inc n
+    inc c.inAsgnTarget
+    analyseVarUsages(c, n)
+    dec c.inAsgnTarget
+    analyseVarUsages(c, n)
+  elif n.symKind != NoSym:
+    let sk = n.symKind
+    if sk == ParamY:
+      # TODO: join with VarS etc.
+      let d = takeParamDecl(n)
+      assert d.name.kind == SymbolDef
+      let lit = d.name.symId
+      c.res.vars[lit] = VarInfo(defs: 1)
+      c.scopes[^1].vars.add lit
+    else:
+      echo "SYM FOUND"
 #   
 #   #  if n.exprKind != NoExpr:
 #     #  case n.exprKind
@@ -196,6 +199,6 @@ const
 proc analyseVarUsages*(n: var Cursor): ProcBodyProps =
   var c = Context()
   c.scopes.add Scope() # there is always one scope
-  analyseVarUsages c, n
+  # analyseVarUsages c, n
   c.res.hasCall = c.scopes[0].hasCall
   result = ensureMove(c.res)
