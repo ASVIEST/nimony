@@ -70,22 +70,46 @@ const
 #     while n.kind != ParRi: 
 #       analyseVarUsages(c, n)
 #     c.closeScope()
-#   of VarS, GvarS, TvarS, ConstS:
-#     let v = asVarDecl(t, n)
-#     assert t[v.name].kind == SymDef
-#     let vn = t[v.name].litId
-#     let hasValue = t[v.value].kind != Empty
-#     c.res.vars[vn] = VarInfo(defs: ord(hasValue))
-#     c.scopes[^1].vars.add vn
-#     if hasValue:
-#       analyseVarUsages(c, t, v.value)
-#   else: discard
-
-#   let k = n.stmtkind
-#   case k
-#   of Empty, Ident, SymDef, IntLit, UIntLit, FloatLit, CharLit, StrLit, Err,
-#      NilC, FalseC, TrueC, SizeofC, AlignofC, OffsetofC, InfC, NegInfC, NanC:
 #     inc n
+#   of VarS, GvarS, TvarS, ConstS:
+#     let v = takeVarDecl(n)
+#     assert v.name.kind == SymbolDef
+#     let lit = v.name.symId
+#     let hasValue = v.value.kind != DotToken
+#     c.res.vars[lit] = VarInfo(defs: ord(hasValue))
+#     c.scopes[^1].vars.add lit
+#     if hasValue:
+#       analyseVarUsages(c, v.value)
+#   of CallS, OnErrS:
+#     inc n
+#     while n.kind != ParRi:
+#       analyseVarUsages(c, n)
+#     c.scopes[^1].hasCall = true
+#   of AsgnS:
+#     inc n
+#     inc c.inAsgnTarget
+#     analanalyseVarUsages(c, n)
+#     dec c.inAsgnTarget
+#     analyseVarUsages(c, n)
+#   elif n.symKind != NoSym:
+#     let sk = n.symKind
+#     if sk == ParamY:
+#       # TODO: join with VarS etc.
+#       let d = takeParamDecl(n)
+#       assert d.name.kind == SymbolDef
+#       let lit = v.name.symId
+#       c.res.vars[lit] = VarInfo(defs: 1)
+#       c.scopes[^1].vars.add lit
+#     else:
+#       echo "SYM FOUND"
+#   
+#   #  if n.exprKind != NoExpr:
+#     #  case n.exprKind
+#     # of IdentC, IntLit, UIntLit, FloatLit, CharLit, StrLit, Err,
+#     #    NilC, FalseC, TrueC, SizeofC, AlignofC, OffsetofC, InfC, NegInfC, NanC:
+#     #    skip n
+#     ## f 
+#   else: skip n
   
 #   of CallC, OnErrC:
 #     # XXX Special case `cold` procs like `raiseIndexError` in order
@@ -172,6 +196,6 @@ const
 proc analyseVarUsages*(n: var Cursor): ProcBodyProps =
   var c = Context()
   c.scopes.add Scope() # there is always one scope
-  # analyseVarUsages c, t, n
+  analyseVarUsages c, n
   c.res.hasCall = c.scopes[0].hasCall
   result = ensureMove(c.res)
