@@ -54,18 +54,19 @@ proc stealFrom*(c: var GeneratedCode; current: LitId; loc: Location; weights: Ta
           c.locals[v] = loc
           break
 
-proc allocRegsForProc(c: var GeneratedCode; t: Tree; n: NodePos; weights: Table[LitId, VarInfo]) =
+proc allocRegsForProc(c: var GeneratedCode; n: var Cursor; weights: Table[LitId, VarInfo]) =
   # Step 2.
-  let k = t[n].kind
+  if n.kind == DotToken:
+    inc n
+  let k = n.stmtKind
   case k
-  of Empty, Ident, SymDef, Sym, IntLit, UIntLit, FloatLit, CharLit, StrLit, Err,
-     NilC, FalseC, TrueC, SizeofC, AlignofC, OffsetofC, InfC, NegInfC, NanC:
-    discard
-  of StmtsC, ScopeC:
+  of StmtsS, ScopeS:
+    inc n
     c.openScope()
-    for ch in sons(t, n):
-      allocRegsForProc(c, t, ch, weights)
+    while n.kind != DotToken:
+      allocRegsForProc(c, n, weights)
     c.closeScope()
+    inc n
   of VarC:
     let v = asVarDecl(t, n)
     assert t[v.name].kind == SymDef
@@ -89,12 +90,14 @@ proc allocRegsForProc(c: var GeneratedCode; t: Tree; n: NodePos; weights: Table[
     let hasValue = t[v.value].kind != Empty
     if hasValue:
       allocRegsForProc(c, t, v.value, weights)
-  of ParamC:
-    # XXX Params have dedicated in the stack anyway...
-    when false:
-      let v = asParamDecl(t, n)
-      assert t[v.name].kind == SymDef
-      let vn = t[v.name].litId
+  # of ParamC:
+  #   # XXX Params have dedicated in the stack anyway...
+  #   when false:
+  #     let v = asParamDecl(t, n)
+  #     assert t[v.name].kind == SymDef
+  #     let vn = t[v.name].litId
+  
+  #[
   of AsgnC, AddrC, DerefC,  AtC, PatC, WhileC, EmitC,
      ParC, AndC, OrC, NotC, NegC, OconstrC, AconstrC, KvC,
      AddC, SubC, MulC, DivC, ModC, ShrC, ShlC, BitandC, BitorC, BitxorC, BitnotC,
@@ -102,7 +105,8 @@ proc allocRegsForProc(c: var GeneratedCode; t: Tree; n: NodePos; weights: Table[
      BreakC, CaseC, OfC, LabC, JmpC, RetC, ParamsC, CallC, OnErrC, DiscardC,
      TryC, RaiseC:
     for ch in sons(t, n):
-      allocRegsForProc(c, t, ch, weights)
+      orProc(c, t, ch, weights)
+  
   of DotC, GvarC, TvarC, ConstC, ProcC, FldC,
      UnionC, ObjectC, EfldC, EnumC, ProctypeC, AtomicC, RoC, RestrictC,
      IntC, UIntC, FloatC, CharC, BoolC, VoidC, PtrC, ArrayC, FlexarrayC,
@@ -111,8 +115,14 @@ proc allocRegsForProc(c: var GeneratedCode; t: Tree; n: NodePos; weights: Table[
      PragmasC, AlignC, BitsC, VectorC, ImpC, NodeclC, InclC, SufC, RaisesC, ErrsC,
      StaticC, ErrC:
     discard "do not traverse these"
-
-proc allocateVars*(c: var GeneratedCode; t: Tree; n: NodePos) =
+  ]#
+  elif n.exprKind != NoExpr or n.kind in {IntLit, StrLit, FloatLit}:
+    inc n
+    while n.kind != DotToken:
+      allocRegsForProc c, n, props.vars
+    inc n # ParRi
+    
+proc allocateVars*(c: var GeneratedCode; n: var Cursor) =
   let props = analyseVarUsages(t, n)
   c.locals.clear()
-  allocRegsForProc c, t, n, props.vars
+  allocRegsForProc c, n, props.vars
