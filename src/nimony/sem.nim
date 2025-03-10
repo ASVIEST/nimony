@@ -156,23 +156,44 @@ proc requestRoutineInstance(c: var SemContext; origin: SymId;
 
 proc tryConverterMatch(c: var SemContext; convMatch: var Match; f: TypeCursor, arg: Item): bool
 
+type
+  SemFlag = enum
+    KeepMagics
+    AllowOverloads
+    PreferIterators
+    AllowUndeclared
+    AllowModuleSym
+    AllowEmpty
+    InTypeContext
+
+  TransformedCallSource = enum
+    RegularCall, MethodCall,
+    DotCall, SubscriptCall,
+    DotAsgnCall, SubscriptAsgnCall
+
+proc semCall(c: var SemContext; it: var Item; flags: set[SemFlag]; source: TransformedCallSource = RegularCall)
+
 proc commonType(c: var SemContext; it: var Item; argBegin: int; expected: TypeCursor) =
   if typeKind(expected) == AutoT:
     return
-  elif typeKind(it.typ) == AutoT:
-    it.typ = expected
-    return
 
-  var m = createMatch(addr c)
   var arg = Item(n: cursorAt(c.dest, argBegin), typ: it.typ)
-  let info = arg.n.info
+  var done = false
   if typeKind(arg.typ) == VoidT and isNoReturn(arg.n):
     # noreturn allowed in expression context
     # maybe use sem flags to restrict this to statement branches
-    discard
-  else:
-    typematch m, expected, arg
+    done = true
+  elif typeKind(arg.typ) == AutoT and not isEmptyContainer(arg.n):
+    # auto is valid for empty container, will be handled below
+    it.typ = expected
+    done = true
   endRead(c.dest)
+  if done:
+    return
+
+  var m = createMatch(addr c)
+  let info = arg.n.info
+  typematch m, expected, arg
   if m.err:
     # try converter
     var convMatch = default(Match)
@@ -188,7 +209,7 @@ proc commonType(c: var SemContext; it: var Item; argBegin: int; expected: TypeCu
         else:
           let inst = c.requestRoutineInstance(convMatch.fn.sym, convMatch.typeArgs, convMatch.inferred, arg.n.info)
           c.dest[c.dest.len-1].setSymId inst.targetSym
-      # ignore genericEmpty case, probably environment is generic
+      # ignore checkEmptyArg case, probably environment is generic
       c.dest.add convMatch.args
       c.dest.addParRi()
       it.typ = expected
@@ -196,7 +217,12 @@ proc commonType(c: var SemContext; it: var Item; argBegin: int; expected: TypeCu
       c.typeMismatch info, it.typ, expected
   else:
     shrink c.dest, argBegin
-    c.dest.add m.args
+    if m.checkEmptyArg and cursorAt(m.args, 0).exprKind in CallKinds:
+      # empty seq call, semcheck
+      var call = Item(n: beginRead(m.args), typ: c.types.autoType)
+      semCall c, call, {}
+    else:
+      c.dest.add m.args
     it.typ = expected
 
 proc producesVoid(c: var SemContext; info: PackedLineInfo; dest: var Cursor) =
@@ -425,10 +451,51 @@ proc newSymId(c: var SemContext; s: SymId): SymId =
     c.makeLocalSym(name)
   result = pool.syms.getOrIncl(name)
 
+proc instToString(buf: TokenBuf; start: int): string =
+  # canonicalized string of invocation
+  # could directly build hash too but this is easier to debug
+  var b = nifbuilder.open((buf.len - start) * 20, compact = true)
+  for n in start ..< buf.len:
+    let k = buf[n].kind
+    case k
+    of DotToken: b.addEmpty()
+    of Ident: b.addIdent(pool.strings[buf[n].litId])
+    of Symbol:
+      # for nested instantiations i.e. `Foo[Bar[int]]`
+      let s = pool.syms[buf[n].symId]
+      if isInstantiation(s):
+        b.addSymbol(removeModule(s))
+      else:
+        b.addSymbol(s)
+    of IntLit: b.addIntLit(pool.integers[buf[n].intId])
+    of UIntLit: b.addUIntLit(pool.uintegers[buf[n].uintId])
+    of FloatLit: b.addFloatLit(pool.floats[buf[n].floatId])
+    of SymbolDef: b.addSymbolDef(pool.syms[buf[n].symId])
+    of CharLit: b.addCharLit char(buf[n].uoperand)
+    of StringLit: b.addStrLit(pool.strings[buf[n].litId])
+    of UnknownToken: b.addIdent "<unknown token>"
+    of EofToken: b.addIntLit buf[n].soperand
+    of ParRi: b.endTree()
+    of ParLe: b.addTree(pool.tags[buf[n].tagId])
+  result = b.extract()
+
+proc instToSuffix(buf: TokenBuf, start: int): string =
+  result = uhashBase36(instToString(buf, start))
+
+proc newInstSymId(c: var SemContext; orig: SymId; suffix: string): SymId =
+  # abc.123.Iabcdefgh.instmod
+  var name = removeModule(pool.syms[orig])
+  name.add(".I")
+  name.add(suffix)
+  name.add '.'
+  name.add c.thisModuleSuffix
+  result = pool.syms.getOrIncl(name)
+
 type
   SubsContext = object
     newVars: Table[SymId, SymId]
     params: ptr Table[SymId, Cursor]
+    instSuffix: string
 
 proc addFreshSyms(c: var SemContext, sc: var SubsContext) =
   for _, newVar in sc.newVars:
@@ -454,7 +521,11 @@ proc subs(c: var SemContext; dest: var TokenBuf; sc: var SubsContext; body: Curs
           dest.add n # keep Symbol as it was
     of SymbolDef:
       let s = n.symId
-      let newDef = newSymId(c, s)
+      let newDef =
+        if sc.instSuffix != "":
+          newInstSymId(c, s, sc.instSuffix)
+        else:
+          newSymId(c, s)
       sc.newVars[s] = newDef
       dest.add symdefToken(newDef, n.info)
     of ParLe:
@@ -581,16 +652,6 @@ proc instantiateGenericHooks(c: var SemContext) =
     for p in procReqs: instantiateGenericProc c, p
 
 # -------------------- sem checking -----------------------------
-
-type
-  SemFlag = enum
-    KeepMagics
-    AllowOverloads
-    PreferIterators
-    AllowUndeclared
-    AllowModuleSym
-    AllowEmpty
-    InTypeContext
 
 proc semExpr(c: var SemContext; it: var Item; flags: set[SemFlag] = {})
 
@@ -1035,11 +1096,6 @@ proc tryBuiltinSubscript(c: var SemContext; it: var Item; lhs: Item): bool
 proc semBuiltinSubscript(c: var SemContext; it: var Item; lhs: Item)
 
 type
-  TransformedCallSource = enum
-    RegularCall, MethodCall,
-    DotCall, SubscriptCall,
-    DotAsgnCall, SubscriptAsgnCall
-
   CallState = object
     beforeCall: int
     fn: Item
@@ -1234,7 +1290,7 @@ proc semReturnType(c: var SemContext; n: var Cursor): TypeCursor =
   result = semLocalType(c, n, InReturnTypeDecl)
 
 proc addArgsInstConverters(c: var SemContext; m: var Match; origArgs: openArray[Item]) =
-  if not (m.genericConverter or m.genericEmpty or m.insertedParam):
+  if not (m.genericConverter or m.checkEmptyArg or m.insertedParam):
     c.dest.add m.args
   else:
     m.args.addParRi()
@@ -1256,7 +1312,12 @@ proc addArgsInstConverters(c: var SemContext; m: var Match; origArgs: openArray[
         if m.err and not prevErr:
           c.typeMismatch arg.info, defaultValue.typ, param.typ
         inc arg
-      elif m.genericEmpty and isEmptyLiteral(arg):
+      elif m.checkEmptyArg and isEmptyContainer(arg):
+        let isCall = arg.exprKind in CallKinds
+        let start = c.dest.len
+        if isCall:
+          takeToken c, arg
+          takeTree c, arg
         takeToken c, arg
         if containsGenericParams(arg):
           c.dest.addSubtree instantiateType(c, arg, m.inferred)
@@ -1264,6 +1325,15 @@ proc addArgsInstConverters(c: var SemContext; m: var Match; origArgs: openArray[
         else:
           takeTree c, arg
         takeParRi c, arg
+        if isCall:
+          takeParRi c, arg
+          # instantiate `@` call, done by semchecking:
+          var callBuf = createTokenBuf(c.dest.len - start)
+          for tok in start ..< c.dest.len:
+            callBuf.add c.dest[tok]
+          c.dest.shrink start
+          var call = Item(n: beginRead(callBuf), typ: c.types.autoType)
+          semCall c, call, {}
       elif m.genericConverter:
         var nested = 0
         while arg.exprKind in {HconvX, OconvX, HderefX, HaddrX}:
@@ -1467,7 +1537,15 @@ proc resolveOverloads(c: var SemContext; it: var Item; cs: var CallState) =
 
     if m[idx].err:
       # adding args or type args may have errored
-      buildErr c, cs.callNode.info, getErrorMsg(m[idx])
+      if finalFn.sym != SymId(0) and
+          # overload of `@` with empty array param:
+          pool.syms[finalFn.sym] == "@.1." & SystemModuleSuffix and
+          (AllowEmpty in cs.flags or isSomeSeqType(it.typ)):
+        # empty seq will be handled, either by `commonType` now or
+        # the call this is an argument of in the case of AllowEmpty
+        typeofCallIs c, it, cs.beforeCall, c.types.autoType
+      else:
+        buildErr c, cs.callNode.info, getErrorMsg(m[idx])
     elif finalFn.kind == TemplateY:
       typeofCallIs c, it, cs.beforeCall, m[idx].returnType
       if c.templateInstCounter <= MaxNestedTemplates:
@@ -1593,7 +1671,7 @@ proc semCall(c: var SemContext; it: var Item; flags: set[SemFlag]; source: Trans
     callNode: it.n.load(),
     dest: createTokenBuf(16),
     source: source,
-    flags: {InTypeContext}*flags
+    flags: {InTypeContext, AllowEmpty}*flags
   )
   inc it.n
   swap c.dest, cs.dest
@@ -1688,6 +1766,10 @@ proc semCall(c: var SemContext; it: var Item; flags: set[SemFlag]; source: Trans
       swap c.dest, cs.dest
       unoverloadableMagicCall(c, it, cs, magic)
       return
+  when defined(debug):
+    let oldDebugAllowErrors = c.debugAllowErrors
+    if cs.fnName in c.unoverloadableMagics:
+      c.debugAllowErrors = true
   cs.fnKind = cs.fn.kind
   var skipSemCheck = false
   while it.n.kind != ParRi:
@@ -1704,6 +1786,8 @@ proc semCall(c: var SemContext; it: var Item; flags: set[SemFlag]; source: Trans
         maybeAddConceptMethods c, cs.fnName, root, cs.candidates
     it.n = arg.n
     cs.args.add arg
+  when defined(debug):
+    c.debugAllowErrors = oldDebugAllowErrors
   assert cs.args.len == argIndexes.len
   swap c.dest, cs.dest
   cs.fn.n = beginRead(cs.dest)
@@ -2494,7 +2578,8 @@ proc semConceptType(c: var SemContext; n: var Cursor) =
   takeParRi c, n
   takeParRi c, n
 
-proc subsGenericTypeFromArgs(c: var SemContext; dest: var TokenBuf; info: PackedLineInfo;
+proc subsGenericTypeFromArgs(c: var SemContext; dest: var TokenBuf;
+                             info: PackedLineInfo; instSuffix: string;
                              origin, targetSym: SymId; decl: TypeDecl; args: Cursor) =
   #[
   What we need to do is rather simple: A generic instantiation is
@@ -2527,7 +2612,7 @@ proc subsGenericTypeFromArgs(c: var SemContext; dest: var TokenBuf; info: Packed
     # take the pragmas from the origin:
     dest.copyTree decl.pragmas
     if err == 0:
-      var sc = SubsContext(params: addr inferred)
+      var sc = SubsContext(params: addr inferred, instSuffix: instSuffix)
       subs(c, dest, sc, decl.body)
       addFreshSyms(c, sc)
     elif err == 1:
@@ -2673,12 +2758,13 @@ proc semInvoke(c: var SemContext; n: var Cursor) =
       sym.name = cachedSym
     else:
       var args = cursorAt(c.dest, beforeArgs)
-      let targetSym = newSymId(c, headId)
+      let instSuffix = instToSuffix(c.dest, typeStart)
+      let targetSym = newInstSymId(c, headId, instSuffix)
       c.instantiatedTypes[key] = targetSym
       if genericArgs == 0:
         c.typeInstDecls.add targetSym
       var sub = createTokenBuf(30)
-      subsGenericTypeFromArgs c, sub, info, headId, targetSym, decl, args
+      subsGenericTypeFromArgs c, sub, info, instSuffix, headId, targetSym, decl, args
       c.dest.endRead()
       let oldScope = c.currentScope
       # move to top level scope:
@@ -6050,7 +6136,7 @@ proc semcheck*(infile, outfile: string; config: sink NifConfig; moduleFlags: set
     routine: SemRoutine(kind: NoSym),
     commandLineArgs: commandLineArgs,
     canSelfExec: canSelfExec)
-  for magic in ["typeof", "compiles"]:
+  for magic in ["typeof", "compiles", "defined", "declared"]:
     c.unoverloadableMagics.incl(pool.strings.getOrIncl(magic))
   c.currentScope = Scope(tab: initTable[StrId, seq[Sym]](), up: nil, kind: ToplevelScope)
   # XXX could add self module symbol here
