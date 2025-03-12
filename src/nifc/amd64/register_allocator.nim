@@ -54,22 +54,24 @@ proc stealFrom*(c: var GeneratedCode; current: LitId; loc: Location; weights: Ta
           c.locals[v] = loc
           break
 
-proc allocRegsForProc(c: var GeneratedCode; t: Tree; n: NodePos; weights: Table[LitId, VarInfo]) =
+proc allocRegsForProc(c: var GeneratedCode; n: var Cursor; weights: Table[LitId, VarInfo]) =
   # Step 2.
-  let k = t[n].kind
+  # echo "allocRegsForProc: ", n, n.kind
+  if n.kind == DotToken:
+    inc n
+  let k = n.stmtKind
   case k
-  of Empty, Ident, SymDef, Sym, IntLit, UIntLit, FloatLit, CharLit, StrLit, Err,
-     NilC, FalseC, TrueC, SizeofC, AlignofC, OffsetofC, InfC, NegInfC, NanC:
-    discard
-  of StmtsC, ScopeC:
+  of StmtsS, ScopeS:
+    inc n
     c.openScope()
-    for ch in sons(t, n):
-      allocRegsForProc(c, t, ch, weights)
+    while n.kind != ParRi:
+      allocRegsForProc(c, n, weights)
     c.closeScope()
-  of VarC:
-    let v = asVarDecl(t, n)
-    assert t[v.name].kind == SymDef
-    let vn = t[v.name].litId
+    inc n
+  of VarS:
+    var v = takeVarDecl(n)
+    assert v.name.kind == SymbolDef
+    let vn = v.name.symId
 
     var typ = typeToSlot(c, v.typ)
     let w = weights[vn]
@@ -86,15 +88,18 @@ proc allocRegsForProc(c: var GeneratedCode; t: Tree; n: NodePos; weights: Table[
           stealFrom c, vn, loc, weights
 
     c.scopes[^1].vars.add vn
-    let hasValue = t[v.value].kind != Empty
-    if hasValue:
-      allocRegsForProc(c, t, v.value, weights)
-  of ParamC:
-    # XXX Params have dedicated in the stack anyway...
-    when false:
-      let v = asParamDecl(t, n)
-      assert t[v.name].kind == SymDef
-      let vn = t[v.name].litId
+    if n.kind == DotToken:
+      inc v.value
+    else:
+      allocRegsForProc(c, v.value, weights)
+  # of ParamC:
+  #   # XXX Params have dedicated in the stack anyway...
+  #   when false:
+  #     let v = asParamDecl(t, n)
+  #     assert t[v.name].kind == SymDef
+  #     let vn = t[v.name].litId
+  
+  #[
   of AsgnC, AddrC, DerefC,  AtC, PatC, WhileC, EmitC,
      ParC, AndC, OrC, NotC, NegC, OconstrC, AconstrC, KvC,
      AddC, SubC, MulC, DivC, ModC, ShrC, ShlC, BitandC, BitorC, BitxorC, BitnotC,
@@ -102,7 +107,8 @@ proc allocRegsForProc(c: var GeneratedCode; t: Tree; n: NodePos; weights: Table[
      BreakC, CaseC, OfC, LabC, JmpC, RetC, ParamsC, CallC, OnErrC, DiscardC,
      TryC, RaiseC:
     for ch in sons(t, n):
-      allocRegsForProc(c, t, ch, weights)
+      orProc(c, t, ch, weights)
+  
   of DotC, GvarC, TvarC, ConstC, ProcC, FldC,
      UnionC, ObjectC, EfldC, EnumC, ProctypeC, AtomicC, RoC, RestrictC,
      IntC, UIntC, FloatC, CharC, BoolC, VoidC, PtrC, ArrayC, FlexarrayC,
@@ -111,8 +117,24 @@ proc allocRegsForProc(c: var GeneratedCode; t: Tree; n: NodePos; weights: Table[
      PragmasC, AlignC, BitsC, VectorC, ImpC, NodeclC, InclC, SufC, RaisesC, ErrsC,
      StaticC, ErrC:
     discard "do not traverse these"
-
-proc allocateVars*(c: var GeneratedCode; t: Tree; n: NodePos) =
-  let props = analyseVarUsages(t, n)
+  ]#
+  of RetS, AsgnS:
+    inc n
+    while n.kind != ParRi: 
+      allocRegsForProc c, n, weights
+    inc n
+  
+  of NoStmt, GvarS, TvarS, ConstS:
+    skip n # do not traverse these
+  elif n.exprKind != NoExpr:
+    inc n
+    while n.kind != DotToken:
+      allocRegsForProc c, n, weights
+    inc n # ParRi
+    
+proc allocateVars*(c: var GeneratedCode; n: Cursor) =
+  var nc = n
+  let props = analyseVarUsages(nc)
   c.locals.clear()
-  allocRegsForProc c, t, n, props.vars
+  nc = n
+  allocRegsForProc c, nc, props.vars

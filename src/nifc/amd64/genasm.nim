@@ -12,7 +12,7 @@
 import std / [assertions, syncio, tables, sets, intsets, strutils]
 from std / os import changeFileExt, splitFile, extractFilename
 
-import .. / .. / lib / [bitabs, packedtrees, lineinfos, nifstreams, nifcursors]
+import .. / .. / lib / [bitabs, lineinfos, nifstreams, nifcursors]
 import ".." / [nifc_model, typenav]
 import ".." / native / [slots, analyser]
 import asm_model, machine, emitter
@@ -22,6 +22,8 @@ type
   TempVar = distinct int
 
 type
+  LitId = SymId
+
   Scope = object
     vars: seq[LitId]
 
@@ -33,35 +35,41 @@ type
     rega: RegAllocator
     intmSize, inConst, labels, prologAt: int
     loopExits: seq[Label]
-    generatedTypes: IntSet
+    generatedTypes: HashSet[SymId]
     requestedSyms: HashSet[string]
     fields: Table[LitId, AsmSlot]
     types: Table[LitId, AsmSlot]
     locals: Table[LitId, Location]
     strings: Table[string, int]
-    floats: Table[LitId, int]
+    floats: Table[FloatId, int]
     scopes: seq[Scope]
     returnLoc: Location
     exitProcLabel: Label
     globals: Table[LitId, Location]
 
-  LitId = nifc_model.StrId
+  # LitId = nifc_model.StrId
 
 proc initGeneratedCode*(m: sink Module; intmSize: int): GeneratedCode =
   result = GeneratedCode(m: m, intmSize: intmSize)
 
-proc error(m: Module; msg: string; tree: PackedTree[NifcKind]; n: NodePos) {.noreturn.} =
+proc error(m: Module; msg: string; n: Cursor) {.noreturn.} =
+  let info = n.info
+  if info.isValid:
+    let rawInfo = unpack(pool.man, info)
+    if rawInfo.file.isValid:
+      write stdout, pool.files[rawInfo.file]
+      write stdout, "(" & $rawInfo.line & ", " & $(rawInfo.col+1) & ") "
   write stdout, "[Error] "
   write stdout, msg
-  writeLine stdout, toString(tree, n, m)
+  writeLine stdout, toString(n, false)
   when defined(debug):
-    writeStackTrace()
+    echo getStackTrace()
   quit 1
 
 # Atoms
 
-proc genIntLit(c: var GeneratedCode; litId: LitId; info: PackedLineInfo) =
-  c.code.addIntLit parseBiggestInt(c.m.lits.strings[litId]), info
+proc genIntLit(c: var GeneratedCode; litId: IntId; info: PackedLineInfo) =
+  c.code.addIntLit pool.integers[litId], info
 
 proc genIntLit(c: var GeneratedCode; i: BiggestInt; info: PackedLineInfo) =
   c.code.addIntLit i, info
@@ -69,19 +77,15 @@ proc genIntLit(c: var GeneratedCode; i: BiggestInt; info: PackedLineInfo) =
 proc genIntLit(c: var TokenBuf; i: BiggestInt; info: PackedLineInfo) =
   c.addIntLit i, info
 
-proc genUIntLit(c: var GeneratedCode; litId: LitId; info: PackedLineInfo) =
-  let i = parseBiggestUInt(c.m.lits.strings[litId])
-  let id = pool.uintegers.getOrIncl(i)
-  c.code.add uintToken(id, info)
+proc genUIntLit(c: var GeneratedCode; litId: UintId; info: PackedLineInfo) =
+  c.code.add uintToken(litId, info)
 
 proc genUIntLit(c: var GeneratedCode; i: BiggestUInt; info: PackedLineInfo) =
   let id = pool.uintegers.getOrIncl(i)
   c.code.add uintToken(id, info)
 
-proc genFloatLit(c: var GeneratedCode; litId: LitId; info: PackedLineInfo) =
-  let i = parseFloat(c.m.lits.strings[litId])
-  let id = pool.floats.getOrIncl(i)
-  c.code.add floatToken(id, info)
+proc genFloatLit(c: var GeneratedCode; litId: FloatId; info: PackedLineInfo) =
+  c.code.add floatToken(litId, info)
 
 proc genFloatLit(c: var GeneratedCode; i: float; info: PackedLineInfo) =
   let id = pool.floats.getOrIncl(i)
@@ -139,49 +143,56 @@ include genpreasm_t
 
 # Procs
 
-proc genWas(c: var GeneratedCode; t: Tree; ch: NodePos) =
-  c.code.buildTree(CommentT, t[ch].info):
-    c.addIdent toString(t, ch.firstSon, c.m), t[ch].info
+proc genWas(c: var GeneratedCode; n: var Cursor) =
+  skip n # TODO: fix was
+  # c.code.buildTree(CommentT, t[ch].info):
+  #  c.addIdent toString(t, ch.firstSon, c.m), t[ch].info
 
 type
   ProcFlag = enum
     isSelectAny, isVarargs
-
-proc genProcPragmas(c: var GeneratedCode; t: Tree; n: NodePos;
+#[
+proc genProcPragmas(c: var GeneratedCode; n: var Cursor;
                     flags: var set[ProcFlag]) =
   # ProcPragma ::= (inline) | (noinline) | CallingConvention | (varargs) | (was Identifier) |
   #               (selectany) | Attribute
-  if t[n].kind == Empty:
-    discard
-  elif t[n].kind == PragmasC:
-    for ch in sons(t, n):
-      case t[ch].kind
-      of CdeclC, StdcallC, NoconvC: discard "supported calling convention"
-      of SafecallC, SyscallC, FastcallC, ThiscallC, MemberC:
-        error c.m, "unsupported calling convention: ", t, ch
-      of VarargsC:
+  if n.kind == DotToken:
+    inc n
+  elif n.substructureKind == PragmasC:
+    inc n
+    while n.kind != ParRi:
+      case n.pragmaKind
+      #  CdeclC, StdcallC, NoconvC: discard "supported calling convention"
+      # f SafecallC, SyscallC, FastcallC, ThiscallC, MemberC:
+      #  error c.m, "unsupported calling convention: ", n
+      of VarargsP:
         flags.incl isVarargs
-      of SelectanyC:
+        skip n
+      of SelectanyP:
         flags.incl isSelectAny
-      of InlineC, AttrC, NoinlineC:
+        skip n
+      of InlineP, AttrP, NoinlineP:
         # Ignore for PreASM
         discard " __attribute__((noinline))"
-      of WasC: genWas(c, t, ch)
-      of RaiseC, ErrsC: discard
+        skip n
+      of WasP: genWas(c, n)
+      of RaiseC, ErrsC:
+        skip n
       else:
-        error c.m, "invalid proc pragma: ", t, ch
+        error c.m, "invalid proc pragma: ", n
+    inc n # ParRi
   else:
-    error c.m, "expected proc pragmas but got: ", t, n
-
-proc genSymDef(c: var GeneratedCode; t: Tree; n: NodePos): string =
-  if t[n].kind == SymDef:
-    let lit = t[n].litId
-    result = c.m.lits.strings[lit]
-    c.code.addSymDef result, t[n].info
+    error c.m, "expected proc pragmas but got: ", n
+]#
+proc genSymDef(c: var GeneratedCode; n: Cursor): string =
+  if n.kind == SymbolDef:
+    let lit = n.symId
+    result = pool.syms[lit]
+    c.code.addSymDef result, n.info
   else:
-    error c.m, "expected SymbolDef but got: ", t, n
+    error c.m, "expected SymbolDef but got: ", n
     result = ""
-
+#[
 proc genParamPragmas(c: var GeneratedCode; t: Tree; n: NodePos) =
   # ProcPragma ::= (was Identifier) | Attribute
   if t[n].kind == Empty:
@@ -215,7 +226,7 @@ proc genVarPragmas(c: var GeneratedCode; t: Tree; n: NodePos; alignOverride: var
         error c.m, "invalid pragma: ", t, ch
   else:
     error c.m, "expected pragmas but got: ", t, n
-
+]#
 include genasm_e
 
 template moveToDataSection(body: untyped) =
@@ -228,86 +239,103 @@ template moveToDataSection(body: untyped) =
 include register_allocator
 include genasm_s
 
-proc genProcDecl(c: var GeneratedCode; t: Tree; n: NodePos) =
+proc genProcDecl(c: var GeneratedCode; n: var Cursor) =
   c.labels = 0 # reset so that we produce nicer code
   c.exitProcLabel = Label(-1)
-  let prc = asProcDecl(t, n)
-  if t[prc.body].kind == Empty: return # ignore procs without body
+  let signatureBegin = c.code.len
+  var prc = takeProcDecl(n)
+  #TODO: this check # if t[prc.body].kind == Empty: return # ignore procs without body
   # (proc SYMBOLDEF Params Type ProcPragmas (OR . StmtList)
   c.openScope() # open scope for the parameters
+  c.m.openScope()
   c.rega = initRegAllocator()
-  c.buildTreeI TextT, t[n].info:
-    discard genSymDef(c, t, prc.name)
+  c.buildTreeI TextT, n.info:
+    discard genSymDef(c, prc.name)
 
     c.genProlog()
 
-    if t[prc.returnType].kind != VoidC:
+    if prc.returnType.kind != DotToken:
       let returnSlot = typeToSlot(c, prc.returnType)
       allocResultWin64 c.rega, returnSlot, c.returnLoc
 
-    if t[prc.params].kind != Empty:
+    if prc.params.kind != DotToken:
       var paramTypes: seq[AsmSlot] = @[]
       var paramLocs: seq[Location] = @[]
-      for ch in sons(t, prc.params):
-        let d = asParamDecl(t, n)
-        if t[d.name].kind == SymDef:
+      var p = prc.params.firstSon
+      while p.kind != ParRi:
+        var d = takeParamDecl(n)
+        if d.name.kind == SymbolDef:
           paramTypes.add typeToSlot(c, d.typ)
           paramLocs.add Location(kind: Undef)
         else:
-          error c.m, "expected SymbolDef but got: ", t, n
+          error c.m, "expected SymbolDef but got: ", d.name
+      
       allocParamsWin64 c.rega, paramTypes, paramLocs
-      var i = 0
-      for ch in sons(t, prc.params):
-        let d = asParamDecl(t, n)
-        if t[d.name].kind == SymDef:
-          let lit = t[d.name].litId
-          c.locals[lit] = paramLocs[i]
-          inc i
+      
+      var symDef = 0
+      p = prc.params.firstSon
+      while p.kind != ParRi:
+        var d = takeParamDecl(n)
+        if d.name.kind == SymbolDef:
+          let lit = d.name.symId
+          c.locals[lit] = paramLocs[symDef]
+          inc symDef
 
     var flags: set[ProcFlag] = {}
-    genProcPragmas c, t, prc.pragmas, flags
-    allocateVars c, t, prc.body
-    genStmt c, t, prc.body
+    # TODO: implement proc pragmas genProcPragmas c, t, prc.pragmas, flags
+    allocateVars c, prc.body
+    genStmt c, prc.body
     if c.exitProcLabel.int >= 0:
-      c.defineLabel(c.exitProcLabel, t[n].info)
+      c.defineLabel(c.exitProcLabel, n.info)
     c.genEpilog()
     c.fixupProlog()
   c.closeScope() # close parameter scope
+  c.m.closeScope()
 
-proc genToplevel(c: var GeneratedCode; t: Tree; n: NodePos) =
+proc genToplevel(c: var GeneratedCode; n: var Cursor) =
   # ExternDecl ::= (imp ProcDecl | VarDecl | ConstDecl)
   # Include ::= (incl StringLiteral)
   # TopLevelConstruct ::= ExternDecl | ProcDecl | VarDecl | ConstDecl |
   #                       TypeDecl | Include | EmitStmt
-  case t[n].kind
-  of ImpC: discard "ignore imp"
-  of NodeclC: discard "ignore nodecl"
-  of InclC: discard "genInclude c, t, n"
-  of ProcC: genProcDecl c, t, n
-  of VarC: genStmt c, t, n
-  of ConstC: genStmt c, t, n
-  of TypeC: discard "handled in a different pass"
-  of EmitC: genEmitStmt c, t, n
+  case n.stmtKind
+  of ImpS:
+    discard "ignore imp"
+    skip n
+  of InclS:
+    discard "genInclude c, n"
+    skip n
+  of ProcS:
+    genProcDecl(c, n)
+  of VarS: genStmt c, n
+  of ConstS: genStmt c, n
+  of TypeS:
+    discard "handled in a different pass"
+    skip n
+  of EmitS: genEmitStmt c, n
   else:
-    error c.m, "expected top level construct but got: ", t, n
+    if n.pragmaKind == NodeclP:
+      skip n
+    else:
+      error c.m, "expected top level construct but got: ", n
 
-proc traverseCode(c: var GeneratedCode; t: Tree; n: NodePos) =
-  case t[n].kind
-  of StmtsC:
-    for ch in sons(t, n): genToplevel(c, t, ch)
+proc traverseCode(c: var GeneratedCode; n: var Cursor) =
+  if n.stmtKind == StmtsS:
+    inc n
+    while n.kind != ParRi: genToplevel(c, n)
+    # missing `inc n` here is intentional
   else:
-    error c.m, "expected `stmts` but got: ", t, n
+    error c.m, "expected `stmts` but got: ", n
 
 proc generateAsm*(inp, outp: string) =
   registerTags()
   var c = initGeneratedCode(load(inp), 8)
-
+  
   var co = TypeOrder()
   traverseTypes(c.m, co)
-
   generateTypes(c, co)
 
-  traverseCode c, c.m.code, StartPos
+  var n = beginRead(c.m.src)
+  traverseCode c, n
   var f = ""
   f.add "(.nif24)\n(stmts"
   f.add toString(c.data)

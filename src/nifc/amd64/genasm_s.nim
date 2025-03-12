@@ -9,12 +9,13 @@
 
 # included from genpreasm.nim
 
-proc genEmitStmt(c: var GeneratedCode; t: Tree; n: NodePos) =
-  error c.m, "'emit' statement is not supported", t, n
+proc genEmitStmt(c: var GeneratedCode; n: var Cursor) =
+  error c.m, "'emit' statement is not supported", n
 
-proc genStmt(c: var GeneratedCode; t: Tree; n: NodePos)
+proc genStmt(c: var GeneratedCode; n: var Cursor)
 
-proc genBreak(c: var GeneratedCode; t: Tree; n: NodePos) =
+#[
+proc genBreak(c: var GeneratedCode; n: var Cursor) =
   # XXX Needs to `kill` locals here?
   if c.loopExits.len == 0:
     error c.m, "`break` not within a loop: ", t, n
@@ -22,7 +23,7 @@ proc genBreak(c: var GeneratedCode; t: Tree; n: NodePos) =
     c.buildTreeI JmpT, t[n].info:
       c.useLabel c.loopExits[^1], t[n].info
 
-proc genWhile(c: var GeneratedCode; t: Tree; n: NodePos) =
+proc genWhile(c: var GeneratedCode; n: var Cursor) =
   #[
      LoopLabel:
        fjmp cond, LoopExit
@@ -75,7 +76,7 @@ proc genIf(c: var GeneratedCode; t: Tree; ifStmt: NodePos) =
     error c.m, "`if` expects `elif` or `else` but got: ", t, ifStmt
   c.defineLabel endif, t[ifStmt].info
 
-proc genLabel(c: var GeneratedCode; t: Tree; n: NodePos) =
+proc genLabel(c: var GeneratedCode; n: var Cursor) =
   let dname = n.firstSon
   if t[dname].kind == SymDef:
     let lit = t[dname].litId
@@ -85,7 +86,7 @@ proc genLabel(c: var GeneratedCode; t: Tree; n: NodePos) =
   else:
     error c.m, "expected SymbolDef but got: ", t, n
 
-proc genGoto(c: var GeneratedCode; t: Tree; n: NodePos) =
+proc genGoto(c: var GeneratedCode; n: var Cursor) =
   let dname = n.firstSon
   if t[dname].kind == Sym:
     let lit = t[dname].litId
@@ -94,17 +95,17 @@ proc genGoto(c: var GeneratedCode; t: Tree; n: NodePos) =
       c.addSym name, t[dname].info
   else:
     error c.m, "expected Symbol but got: ", t, n
-
+]#
 # XXX `case` not implemented
 
 #[
-proc genBranchValue(c: var GeneratedCode; t: Tree; n: NodePos) =
+proc genBranchValue(c: var GeneratedCode; n: var Cursor) =
   if t[n].kind in {NifcKind.IntLit, UIntLit, CharLit, Sym}:
     c.genx t, n, WantValue
   else:
     error c.m, "expected valid `of` value but got: ", t, n
 
-proc genCaseCond(c: var GeneratedCode; t: Tree; n: NodePos;
+proc genCaseCond(c: var GeneratedCode; n: var Cursor;
                  tmp: TempVar; tmptyp: AsmSlot; action: Label) =
   # BranchValue ::= Number | CharLiteral | Symbol
   # BranchRange ::= BranchValue | (range BranchValue BranchValue)
@@ -258,88 +259,117 @@ proc getExitProcLabel(c: var GeneratedCode): Label =
     c.exitProcLabel = getLabel(c)
   result = c.exitProcLabel
 
-proc genReturn(c: var GeneratedCode; t: Tree; n: NodePos) =
-  let retVal = n.firstSon
+
+proc genReturn(c: var GeneratedCode; n: var Cursor) =
+  inc n
   #var d = resultWin64(getAsmSlot(c, retVal))
-  if t[retVal].kind != Empty:
-    c.genx t, retVal, c.returnLoc
+  if n.kind != DotToken:
+    c.genx n, c.returnLoc
   let lab = getExitProcLabel(c)
   # we don't generate a `ret` instruction as we might need to
   # free the stack and we don't know yet how much stack we need!
-  c.buildTreeI JmpT, t[n].info:
-    c.useLabel lab, t[n].info
+  c.buildTreeI JmpT, n.info:
+    c.useLabel lab, n.info
 
-proc genLocalVar(c: var GeneratedCode; t: Tree; n: NodePos) =
-  let v = asVarDecl(t, n)
-  assert t[v.name].kind == SymDef
-  let name = t[v.name].litId
-  assert c.locals.hasKey(name)
-  if t[v.value].kind != Empty:
+proc genLocalVar(c: var GeneratedCode; n: var Cursor) =
+  var decl = takeVarDecl(n)
+  assert decl.name.kind == SymbolDef
+  let lit = decl.name.symId
+
+  c.m.registerLocal(lit, decl.typ)
+  assert c.locals.hasKey(lit)
+  if decl.value.kind == DotToken:
+    inc n
+  else:
     # generate the assignment:
-    genx c, t, v.value, c.locals[name]
+    genx c, decl.value, c.locals[lit]
 
-proc genConstData(c: var GeneratedCode; t: Tree; n: NodePos) =
-  let info = t[n].info
-  case t[n].kind
-  of Sym:
-    # reference to a proc or to some other address that will be resolved
-    # during linking:
-    c.addSym c.m.lits.strings[t[n].litId], info
-  of CharLit:
-    let ch = t[n].uoperand
-    c.genIntLit int(ch), info
-  of FloatLit:
-    c.genFloatLit t[n].litId, info
-  of IntLit:
-    c.genIntLit t[n].litId, info
-  of UIntLit:
-    c.genUIntLit t[n].litId, info
+
+proc genConstData(c: var GeneratedCode; n: var Cursor) =
+  let info = n.info
+  case n.exprKind
+  of NoExpr:
+    case n.kind
+    of Symbol:
+      # reference to a proc or to some other address that will be resolved
+      # during linking:
+      c.addSym pool.syms[n.symId], info
+      inc n
+    of CharLit:
+      let ch = n.charLit
+      c.genIntLit int(ch), info
+      inc n
+    of FloatLit:
+      c.genFloatLit n.floatId, info
+      inc n
+    of IntLit:
+      c.genIntLit n.intId, info
+      inc n
+    of UIntLit:
+      c.genUIntLit n.uintId, info
+      inc n
+    of StringLit:
+      var dest = Location(kind: Undef)
+      genStrLit(c, pool.strings[n.litId], info, dest)
+      c.addSym pool.syms[dest.data], info
+      inc n
+    else:
+      error c.m, "unsupported expression for const: ", n
   of FalseC:
     c.genIntLit 0, info
+    skip n
   of TrueC:
     c.genIntLit 1, info
-  of StrLit:
-    var dest = Location(kind: Undef)
-    genStrLit(c, c.m.lits.strings[t[n].litId], info, dest)
-    c.addSym c.m.lits.strings[dest.data], info
+    skip n
   of NilC:
     c.genIntLit 0, info
+    skip n
   of AconstrC:
-    for ch in sonsFromX(t, n):
-      c.genConstData t, ch
+    inc n
+    while n.kind != ParRi:
+      c.genConstData n
+    skipParRi n
   of OconstrC:
-    for ch in sonsFromX(t, n):
-      if t[ch].kind == OconstrC:
+    inc n
+    while n.kind != ParRi:
+      if n.exprKind == OconstrC:
         # Inheritance
-        c.genConstData t, ch
+        c.genConstData n
       else:
-        let (_, v) = sons2(t, ch)
-        c.genConstData t, v
+        assert n.substructureKind == KvU
+        inc n
+        skip n
+        c.genConstData n
+        skipParRi n
+    skipParRi n
   of ParC:
-    let arg = n.firstSon
-    genConstData c, t, arg
+    inc n
+    genConstData c, n
   of SizeofC:
-    let a = typeToSlot(c, n.firstSon)
+    inc n
+    let a = typeToSlot(c, n)
     c.genIntLit a.size, info
   of AlignofC:
-    let a = typeToSlot(c, n.firstSon)
+    inc n
+    let a = typeToSlot(c, n)
     c.genIntLit a.align, info
-  of OffsetofC:
-    let (obj, fld) = sons2(t, n)
-    let field = t[fld].litId
-    let ftyp = c.fields[field]
-    c.genIntLit ftyp.offset, info
+  # of OffsetofC:
+  #   inc n
+  #   let (obj, fld) = sons2(t, n)
+  #   let field = t[fld].litId
+  #   let ftyp = c.fields[field]
+  #   c.genIntLit ftyp.offset, info
   else:
-    error c.m, "unsupported expression for const: ", t, n
+    error c.m, "unsupported expression for const: ", n
 
-proc genGlobalVar(c: var GeneratedCode; t: Tree; n: NodePos) =
-  let where = if t[n].kind == TvarC: InTls else: InData
-  let v = asVarDecl(t, n)
-  assert t[v.name].kind == SymDef
-  let name = t[v.name].litId
-  var d = Location(flags: {Indirect}, typ: typeToSlot(c, v.typ), kind: where)
-  d.data = name
-  c.globals[name] = d
+proc genGlobalVar(c: var GeneratedCode; n: var Cursor) =
+  let where = if n.stmtKind == TvarS: InTls else: InData
+  var decl = takeVarDecl(n)
+  assert decl.name.kind == SymbolDef
+  let lit = decl.name.symId
+  var d = Location(flags: {Indirect}, typ: typeToSlot(c, decl.typ), kind: where)
+  d.data = lit
+  c.globals[lit] = d
 
   let opc =
     case d.typ.align
@@ -349,48 +379,58 @@ proc genGlobalVar(c: var GeneratedCode; t: Tree; n: NodePos) =
     of 8: QuadT
     else: QuadT # bigger alignments are not really supported for now?
 
-  if t[n].kind == ConstC:
-    c.buildTreeI RodataT, t[n].info:
-      c.code.addSymDef c.m.lits.strings[name], t[v.name].info
+  if n.stmtKind == ConstS:
+    c.buildTreeI RodataT, n.info:
+      c.code.addSymDef pool.syms[lit], decl.name.info
       c.buildTree opc:
-        c.genConstData t, v.value
+        c.genConstData decl.value
 
   else:
-    c.buildTreeI DataT, t[n].info:
-      c.code.addSymDef c.m.lits.strings[name], t[v.name].info
+    c.buildTreeI DataT, n.info:
+      c.code.addSymDef pool.syms[lit], decl.name.info
       c.buildTree opc:
         c.buildTree TimesT:
-          c.genIntLit d.typ.size div min(d.typ.align, 8), t[n].info
-          c.genIntLit 0, t[n].info
+          c.genIntLit d.typ.size div min(d.typ.align, 8), n.info
+          c.genIntLit 0, n.info
 
-    if t[v.value].kind != Empty:
+    if decl.value.kind == DotToken:
+      inc n
+    else:
       # generate the assignment:
-      genx c, t, v.value, d
+      genx c, decl.value, d
 
-proc genStmt(c: var GeneratedCode; t: Tree; n: NodePos) =
-  case t[n].kind
-  of Empty:
-    discard
-  of StmtsC, ScopeC:
-    for ch in sons(t, n):
-      genStmt(c, t, ch)
-  of CallC:
+proc genStmt(c: var GeneratedCode; n: var Cursor) =
+  case n.stmtKind
+  of NoStmt:
+    if n.kind == DotToken:
+      inc n
+    else:
+      error c.m, "expected statement but got: ", n
+  of StmtsS, ScopeS:
+    inc n
+    while n.kind != ParRi:
+      genStmt(c, n)
+    inc n # ParRi
+  of CallS:
     var d = Location(kind: Undef)
-    genCall c, t, n, d
-  of VarC:
-    genLocalVar c, t, n
-  of GvarC, TvarC, ConstC:
+    # genCall c, n, d
+    skip n
+  of VarS:
+    genLocalVar c, n
+    # skip n
+  of GvarS, TvarS, ConstS:
+    echo "RUN!"
     moveToDataSection:
-      genGlobalVar c, t, n
+      genGlobalVar c, n
   #of EmitC:
   #  genEmitStmt c, t, n
-  of AsgnC: genAsgn c, t, n
-  of IfC: genIf c, t, n
-  of WhileC: genWhile c, t, n
-  of BreakC: genBreak c, t, n
-  #of CaseC: genSwitch c, t, n
-  of LabC: genLabel c, t, n
-  of JmpC: genGoto c, t, n
-  of RetC: genReturn c, t, n
+  of AsgnS: genAsgn c, n
+  # of IfC: genIf c, t, n
+  # of WhileC: genWhile c, t, n
+  # of BreakC: genBreak c, t, n
+  # of CaseC: genSwitch c, t, n
+  # of LabC: genLabel c, t, n
+  # of JmpC: genGoto c, t, n
+  of RetS: genReturn c, n
   else:
-    error c.m, "expected statement but got: ", t, n
+    error c.m, "expected statement but got: ", n
