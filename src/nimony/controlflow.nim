@@ -651,7 +651,7 @@ proc trStmt(c: var ControlFlow; n: var Cursor) =
     trRaise c, n
   of IteratorS, ProcS, FuncS, MacroS, ConverterS, MethodS:
     trProc c, n
-  of TemplateS, TypeS, CommentS, EmitS, IncludeS, ImportS, ExportS, FromS, ImportExceptS, PragmasS,
+  of TemplateS, TypeS, CommentS, EmitS, IncludeS, ImportS, ExportS, FromimportS, ImportExceptS, PragmasS,
      ImportasS, ExportexceptS, BindS, MixinS, UsingS:
     c.dest.addDotToken()
     skip n
@@ -752,7 +752,7 @@ proc trExpr(c: var ControlFlow; n: var Cursor) =
       trStmtListExpr c, n
     of CallKinds:
       trCall c, n
-    of ArrAtX, TupAtX, AtX, DerefX, HderefX, DotX, DdotX, PatX:
+    of ArrAtX, TupatX, AtX, DerefX, HderefX, DotX, DdotX, PatX:
       # in anticipation of special casing:
       trExprLoop c, n
     of AddrX, HaddrX:

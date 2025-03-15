@@ -14,7 +14,7 @@ import symparser
 import typekeys
 import ".." / nimony / [nimony_model, programs, typenav, expreval, xints, decls, builtintypes, sizeof, typeprops]
 from ".." / nimony / sigmatch import isSomeStringType, isStringType
-import basics, pipeline
+import hexer_context, pipeline
 import  ".." / lib / stringtrees
 
 
@@ -947,7 +947,7 @@ proc traverseConv(c: var EContext; n: var Cursor) =
 
 proc isSimpleLiteral(nb: var Cursor): bool =
   case nb.kind
-  of IntLit, UIntLit, FloatLit, CharLit, StringLit, DotToken:
+  of IntLit, UIntLit, FloatLit, CharLit, DotToken:
     result = true
     inc nb
   else:
@@ -1038,7 +1038,7 @@ proc traverseExpr(c: var EContext; n: var Cursor) =
       traverseExpr(c, n)
       traverseExpr(c, n)
       takeParRi c, n
-    of TupAtX:
+    of TupatX:
       c.dest.add tagToken("dot", n.info)
       inc n # skip tag
       traverseExpr c, n # tuple
@@ -1079,19 +1079,20 @@ proc traverseExpr(c: var EContext; n: var Cursor) =
       let arg = suf
       skip suf
       assert suf.kind == StringLit
-      if arg.kind == StringLit and pool.strings[suf.litId] == "R":
+      if arg.kind == StringLit and pool.strings[suf.litId] in ["R", "T"]:
         # cstring conversion
         inc n
         c.dest.add n # add string lit directly
         inc n # arg
         inc n # suf
+        skipParRi c, n
       else:
         c.dest.add n
         inc n
         traverseExpr c, n
         c.dest.add n
         inc n
-      takeParRi c, n
+        takeParRi c, n
     of AshrX:
       c.dest.add tagToken("shr", n.info)
       inc n
@@ -1397,7 +1398,7 @@ proc traverseStmt(c: var EContext; n: var Cursor; mode = TraverseAll) =
     of DiscardS:
       let discardToken = n
       inc n
-      if n.kind == DotToken:
+      if n.kind in {StringLit, DotToken}:
         # eliminates discard without side effects
         inc n
         skipParRi c, n
@@ -1416,7 +1417,7 @@ proc traverseStmt(c: var EContext; n: var Cursor; mode = TraverseAll) =
       error c, "BUG: not implemented: ", n
     of FuncS, ProcS, ConverterS, MethodS:
       traverseProc c, n, mode
-    of MacroS, TemplateS, IncludeS, ImportS, FromS, ImportExceptS, ExportS, CommentS, IteratorS,
+    of MacroS, TemplateS, IncludeS, ImportS, FromimportS, ImportExceptS, ExportS, CommentS, IteratorS,
        ImportasS, ExportexceptS, BindS, MixinS, UsingS, StaticstmtS:
       # pure compile-time construct, ignore:
       skip n
