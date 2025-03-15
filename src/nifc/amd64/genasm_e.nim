@@ -208,7 +208,6 @@ proc genCall(c: var GeneratedCode; n: var Cursor; dest: var Location) =
       argTypes.add c.typeToSlot(paramDecl.typ)
     skipParRi p
   
-  # TODO: implement can happen for varargs:
   for i in argTypes.len ..< args.len:
     argTypes.add c.getAsmSlot(args[i])
 
