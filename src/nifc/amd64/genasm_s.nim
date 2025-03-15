@@ -413,7 +413,6 @@ proc genStmt(c: var GeneratedCode; n: var Cursor) =
   of CallS:
     var d = Location(kind: Undef)
     genCall c, n, d
-    # skip n
   of VarS:
     genLocalVar c, n
     # skip n

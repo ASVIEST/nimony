@@ -151,20 +151,22 @@ proc genWas(c: var GeneratedCode; n: var Cursor) =
 type
   ProcFlag = enum
     isSelectAny, isVarargs
-#[
+
 proc genProcPragmas(c: var GeneratedCode; n: var Cursor;
                     flags: var set[ProcFlag]) =
   # ProcPragma ::= (inline) | (noinline) | CallingConvention | (varargs) | (was Identifier) |
   #               (selectany) | Attribute
   if n.kind == DotToken:
     inc n
-  elif n.substructureKind == PragmasC:
+  elif n.substructureKind == PragmasU:
     inc n
     while n.kind != ParRi:
       case n.pragmaKind
-      #  CdeclC, StdcallC, NoconvC: discard "supported calling convention"
-      # f SafecallC, SyscallC, FastcallC, ThiscallC, MemberC:
-      #  error c.m, "unsupported calling convention: ", n
+      of NoPragma, AlignP, BitsP, VectorP, NodeclP, StaticP:
+        if n.callConvKind != NoCallConv:
+          skip n
+        else:
+          error c.m, "invalid proc pragma: ", n
       of VarargsP:
         flags.incl isVarargs
         skip n
@@ -176,14 +178,12 @@ proc genProcPragmas(c: var GeneratedCode; n: var Cursor;
         discard " __attribute__((noinline))"
         skip n
       of WasP: genWas(c, n)
-      of RaiseC, ErrsC:
+      of ErrsP, RaisesP:
         skip n
-      else:
-        error c.m, "invalid proc pragma: ", n
     inc n # ParRi
   else:
     error c.m, "expected proc pragmas but got: ", n
-]#
+
 proc genSymDef(c: var GeneratedCode; n: Cursor): string =
   if n.kind == SymbolDef:
     let lit = n.symId
@@ -242,9 +242,8 @@ include genasm_s
 proc genProcDecl(c: var GeneratedCode; n: var Cursor) =
   c.labels = 0 # reset so that we produce nicer code
   c.exitProcLabel = Label(-1)
-  let signatureBegin = c.code.len
   var prc = takeProcDecl(n)
-  #TODO: this check # if t[prc.body].kind == Empty: return # ignore procs without body
+  if prc.body.kind == DotToken: return # ignore procs without body
   # (proc SYMBOLDEF Params Type ProcPragmas (OR . StmtList)
   c.openScope() # open scope for the parameters
   c.m.openScope()
@@ -282,7 +281,7 @@ proc genProcDecl(c: var GeneratedCode; n: var Cursor) =
           inc symDef
 
     var flags: set[ProcFlag] = {}
-    # TODO: implement proc pragmas genProcPragmas c, t, prc.pragmas, flags
+    genProcPragmas c, prc.pragmas, flags
     allocateVars c, prc.body
     genStmt c, prc.body
     if c.exitProcLabel.int >= 0:

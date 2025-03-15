@@ -192,8 +192,8 @@ proc genCall(c: var GeneratedCode; n: var Cursor; dest: var Location) =
   let decl = c.m.defs.getOrDefault(n.symId)
   var prc = c.m.src.cursorAt(decl.pos)
   var args: seq[Cursor] = @[] # so that we can also do it backwards
+  inc n # after proc ident...
   var arg = n
-  inc arg # after proc ident...
   while arg.kind != ParRi:
     args.add arg
     inc arg
