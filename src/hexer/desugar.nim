@@ -3,7 +3,7 @@
 import std / [assertions]
 include nifprelude
 import ".." / nimony / [nimony_model, decls, programs, typenav, sizeof, expreval, xints, builtintypes]
-import basics
+import hexer_context
 
 type
   Context = object
@@ -47,7 +47,7 @@ proc needsTemp(n: Cursor): bool =
       inc n
       skip n
       result = needsTemp(n)
-    of AtX, PatX, ArrAtX, TupAtX, DotX, DdotX, ParX, AddrX, HaddrX:
+    of AtX, PatX, ArrAtX, TupatX, DotX, DdotX, ParX, AddrX, HaddrX:
       inc n
       while n.kind != ParRi:
         if needsTemp(n):
@@ -662,7 +662,7 @@ proc tr(c: var Context; dest: var TokenBuf; n: var Cursor) =
       of ProcS, FuncS, MacroS, MethodS, ConverterS:
         trProc c, dest, n
       of IteratorS, TemplateS, TypeS, EmitS, BreakS, ContinueS,
-        ForS, CmdS, IncludeS, ImportS, FromS, ImportExceptS,
+        ForS, CmdS, IncludeS, ImportS, FromimportS, ImportExceptS,
         ExportS, CommentS,
         PragmasS:
         takeTree dest, n

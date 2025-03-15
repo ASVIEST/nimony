@@ -214,6 +214,7 @@ proc commonType(c: var SemContext; it: var Item; argBegin: int; expected: TypeCu
       c.dest.addParRi()
       it.typ = expected
     else:
+      shrink c.dest, argBegin
       c.typeMismatch info, it.typ, expected
   else:
     shrink c.dest, argBegin
@@ -292,24 +293,27 @@ proc importSingleFile(c: var SemContext; f1: ImportedFilename; origin: string; m
     c.buildErr info, "file not found: " & f2
     return
   let suffix = moduleSuffix(f2, c.g.config.paths)
-  if not c.processedModules.containsOrIncl(suffix):
+  var moduleSym = SymId(0)
+  if not c.processedModules.contains(suffix):
     c.meta.importedFiles.add f2
     if c.canSelfExec and needsRecompile(f2, suffixToNif suffix):
       selfExec c, f2, (if mode.kind == ImportSystem: " --isSystem" else: "")
 
     let moduleName = pool.strings.getOrIncl(f1.name)
-    let moduleSym = identToSym(c, moduleName, ModuleY)
+    moduleSym = identToSym(c, moduleName, ModuleY)
+    c.processedModules[suffix] = moduleSym
     let s = Sym(kind: ModuleY, name: moduleSym, pos: ImportedPos)
     c.currentScope.addOverloadable(moduleName, s)
     var moduleDecl = createTokenBuf(2)
     moduleDecl.addParLe(ModuleY, info)
     moduleDecl.addParRi()
     publish moduleSym, moduleDecl
-    var module = ImportedModule()
-    var marker = mode.list
-    loadInterface suffix, module.iface, moduleSym, c.importTab, c.converters,
-      marker, negateMarker = mode.kind == FromImport
-    c.importedModules[moduleSym] = module
+  else:
+    moduleSym = c.processedModules[suffix]
+  let module = addr c.importedModules.mgetOrPut(moduleSym, ImportedModule())
+  var marker = mode.list
+  loadInterface suffix, module.iface, moduleSym, c.importTab, c.converters,
+    marker, negateMarker = mode.kind == FromImport
 
 proc cyclicImport(c: var SemContext; x: var Cursor) =
   c.buildErr x.info, "cyclic module imports are not implemented"
@@ -915,7 +919,7 @@ proc addFn(c: var SemContext; fn: FnCandidate; fnOrig: Cursor; args: openArray[I
         if n.kind == ParLe:
           if n.exprKind in {DefinedX, DeclaredX, CompilesX, TypeofX,
               LowX, HighX, AddrX, EnumToStrX, DefaultObjX, DefaultTupX,
-              ArrAtX, DerefX, TupAtX}:
+              ArrAtX, DerefX, TupatX}:
             # magic needs semchecking after overloading
             result = MagicCallNeedsSemcheck
           else:
@@ -2048,7 +2052,7 @@ proc tryBuiltinDot(c: var SemContext; it: var Item; lhs: Item; fieldName: StrId;
         if field.kind == KvU:
           let name = getIdent(field.name)
           if name == fieldName:
-            c.dest[exprStart] = parLeToken(TupAtX, info)
+            c.dest[exprStart] = parLeToken(TupatX, info)
             c.dest.addIntLit(i, info)
             it.typ = field.typ # will be fit later with commonType
             result = MatchedDotField
@@ -4670,7 +4674,7 @@ proc semSuf(c: var SemContext, it: var Item) =
   of "f": it.typ = c.types.floatType
   of "f32": it.typ = c.types.float32Type
   of "f64": it.typ = c.types.float64Type
-  of "R": it.typ = c.types.stringType
+  of "R", "T": it.typ = c.types.stringType
   else:
     c.buildErr it.n.info, "unknown suffix: " & pool.strings[it.n.litId]
   takeToken c, it.n # suffix
@@ -5806,7 +5810,7 @@ proc semCardSet(c: var SemContext; it: var Item) =
   commonType c, it, beforeExpr, expected
 
 proc addTupleAccess(buf: var TokenBuf; lvalue: SymId; i: int; info: PackedLineInfo) =
-  buf.add parLeToken(TupAtX, info)
+  buf.add parLeToken(TupatX, info)
   buf.add symToken(lvalue, info)
   buf.addIntLit(i, info)
   buf.addParRi()
@@ -6018,7 +6022,7 @@ proc semExpr(c: var SemContext; it: var Item; flags: set[SemFlag] = {}) =
       of IncludeS: semInclude c, it
       of ImportS: semImport c, it
       of ImportExceptS: semImportExcept c, it
-      of FromS: semFromImport c, it
+      of FromimportS: semFromImport c, it
       of AsgnS:
         toplevelGuard c:
           semAsgn c, it
@@ -6102,7 +6106,7 @@ proc semExpr(c: var SemContext; it: var Item; flags: set[SemFlag] = {}) =
     of DotX, DdotX:
       toplevelGuard c:
         semDot c, it, flags
-    of TupAtX:
+    of TupatX:
       toplevelGuard c:
         semTupAt c, it
     of DconvX:

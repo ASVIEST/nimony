@@ -39,11 +39,11 @@ proc testOrSetMark(n: Cursor): bool {.inline.} =
     doMark(n)
     result = false
 
-proc rootOf(n: Cursor): SymId =
+proc rootOf*(n: Cursor): SymId =
   var n = n
   while true:
     case n.exprKind
-    of DotX, TupAtX, AtX, ArrAtX, DerefX, AddrX, HderefX, HaddrX, PatX:
+    of DotX, TupatX, AtX, ArrAtX, DerefX, AddrX, HderefX, HaddrX, PatX:
       inc n
     of ConvKinds:
       inc n
@@ -194,7 +194,7 @@ proc singlePath(pc: Cursor; nested: int; x: Cursor; pcs: var seq[Cursor]; otherU
             otherUsage = pc
             return false
         of IfS, WhenS, WhileS, ForS, CaseS, TryS, YldS, RaiseS, ExportS,
-           IncludeS, ImportS, FromS, ImportExceptS, CommentS, PragmasS,
+           IncludeS, ImportS, FromimportS, ImportExceptS, CommentS, PragmasS,
            ImportasS, ExportexceptS, BindS, MixinS, UsingS,
            UnpackDeclS, StaticstmtS, AsmS, DeferS:
           raiseAssert "BUG: statement not eliminated: " & $pc.stmtKind
