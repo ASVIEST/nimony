@@ -353,12 +353,11 @@ proc genConstData(c: var GeneratedCode; n: var Cursor) =
     inc n
     let a = typeToSlot(c, n)
     c.genIntLit a.align, info
-  # of OffsetofC:
-  #   inc n
-  #   let (obj, fld) = sons2(t, n)
-  #   let field = t[fld].litId
-  #   let ftyp = c.fields[field]
-  #   c.genIntLit ftyp.offset, info
+  of OffsetofC:
+    inc n
+    skip n # obj typ
+    let ftyp = c.fields[n.symId]
+    c.genIntLit ftyp.offset, info
   else:
     error c.m, "unsupported expression for const: ", n
 
