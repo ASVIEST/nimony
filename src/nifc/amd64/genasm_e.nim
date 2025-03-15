@@ -189,14 +189,14 @@ proc into(c: var GeneratedCode; dest: var Location; src: Location) =
 
 proc genCall(c: var GeneratedCode; n: var Cursor; dest: var Location) =
   inc n
+  var name = n
   let decl = c.m.defs.getOrDefault(n.symId)
   var prc = c.m.src.cursorAt(decl.pos)
   var args: seq[Cursor] = @[] # so that we can also do it backwards
-  inc n # after proc ident...
-  var arg = n
-  while arg.kind != ParRi:
-    args.add arg
-    inc arg
+  inc n # first arg
+  while n.kind != ParRi:
+    args.add n
+    inc n
   
   let procDecl = takeProcDecl(prc)
   var stackSpace = HomeSpace
@@ -227,8 +227,8 @@ proc genCall(c: var GeneratedCode; n: var Cursor; dest: var Location) =
   for i in 0 ..< args.len:
     genx c, args[i], argLocs[i]
 
-  let fn = gen(c, n)
-  c.buildTreeI CallT, n.info:
+  let fn = gen(c, name)
+  c.buildTreeI CallT, name.info:
     c.emitLoc fn
 
   if procDecl.returnType.kind == DotToken:
