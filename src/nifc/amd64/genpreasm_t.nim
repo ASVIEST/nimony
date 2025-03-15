@@ -257,15 +257,12 @@ proc generateTypes(c: var GeneratedCode; o: TypeOrder) =
       fillTypeSlot c, decl.body, dest
       c.types[litId] = dest
 
-# proc getAsmSlot(c: var GeneratedCode; n: Cursor): AsmSlot =
-#   TODO: need?
-#   let t = getType(c.m, c.m.code, n)
-#   if isError(t):
-#     error c.m, "cannot compute type of expression: ", c.m.code, n
-#   else:
-#     result = AsmSlot()
-#     fillTypeSlot c, t, result
-
-proc typeToSlot(c: var GeneratedCode; n: var Cursor): AsmSlot =
+proc getAsmSlot(c: var GeneratedCode; n: Cursor): AsmSlot =
+  var t = getType(c.m, n)
   result = AsmSlot()
+  fillTypeSlot c, t, result
+
+proc typeToSlot(c: var GeneratedCode; n: Cursor): AsmSlot =
+  result = AsmSlot()
+  var n = n
   fillTypeSlot c, n, result

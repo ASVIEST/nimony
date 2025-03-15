@@ -413,13 +413,12 @@ proc genStmt(c: var GeneratedCode; n: var Cursor) =
     inc n # ParRi
   of CallS:
     var d = Location(kind: Undef)
-    # genCall c, n, d
-    skip n
+    genCall c, n, d
+    # skip n
   of VarS:
     genLocalVar c, n
     # skip n
   of GvarS, TvarS, ConstS:
-    echo "RUN!"
     moveToDataSection:
       genGlobalVar c, n
   #of EmitC:

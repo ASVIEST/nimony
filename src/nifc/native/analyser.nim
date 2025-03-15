@@ -84,6 +84,8 @@ proc analyseVarUsages(c: var Context; n: var Cursor) =
       analyseVarUsages(c, n)
     n = oldN
   of CallS, OnErrS:
+    # XXX Special case `cold` procs like `raiseIndexError` in order
+    # to produce better code for the common case.
     inc n
     while n.kind != ParRi:
       analyseVarUsages(c, n)
@@ -100,7 +102,7 @@ proc analyseVarUsages(c: var Context; n: var Cursor) =
     while n.kind != ParRi: 
       analyseVarUsages(c, n)
     inc n
-  
+
   of NoStmt:
     skip n # skip node
   
@@ -123,14 +125,6 @@ proc analyseVarUsages(c: var Context; n: var Cursor) =
 #     #    skip n
 #     ## f 
 #   else: skip n
-  
-#   of CallC, OnErrC:
-#     # XXX Special case `cold` procs like `raiseIndexError` in order
-#     # to produce better code for the common case.
-#     for ch in sons(t, n):
-#       analyseVarUsages(c, t, ch)
-#     c.scopes[^1].hasCall = true
-  
 #   of ParamC:
 #     let v = asParamDecl(t, n)
 #     assert t[v.name].kind == SymDef

@@ -187,53 +187,61 @@ proc into(c: var GeneratedCode; dest: var Location; src: Location) =
   else:
     genMov c, dest, src
 
-#[
 proc genCall(c: var GeneratedCode; n: var Cursor; dest: var Location) =
-  var args: seq[NodePos] = @[] # so that we can also do it backwards
-  for ch in sonsFromX(n): args.add ch
-
-  let sig = asProcType(t, getType(c.m, n.firstSon).rawPos)
+  inc n
+  let decl = c.m.defs.getOrDefault(n.symId)
+  var prc = c.m.src.cursorAt(decl.pos)
+  var args: seq[Cursor] = @[] # so that we can also do it backwards
+  var arg = n
+  inc arg # after proc ident...
+  while arg.kind != ParRi:
+    args.add arg
+    inc arg
+  
+  let procDecl = takeProcDecl(prc)
   var stackSpace = HomeSpace
   var argTypes: seq[AsmSlot] = @[]
-  if t[sig.params].kind == ParamsC:
-    for param in sons(t, sig.params):
-      let p = asParamDecl(t, param)
-      argTypes.add c.typeToSlot(p.typ)
-  # can happen for varargs:
+  if procDecl.params.kind != DotToken:
+    var p = procDecl.params.firstSon
+    while p.kind != ParRi:
+      let paramDecl = takeParamDecl(p)
+      argTypes.add c.typeToSlot(paramDecl.typ)
+    skipParRi p
+  
+  # TODO: implement can happen for varargs:
   for i in argTypes.len ..< args.len:
     argTypes.add c.getAsmSlot(args[i])
 
   # we use this "RegAllocator" here only to compute the where the
   # expressions need to end up:
   var regb = initRegAllocator()
-  if t[sig.returnType].kind in {VoidC, Empty}:
+  if procDecl.returnType.kind == DotToken:
     discard "no return type"
   else:
-    let ts = c.typeToSlot(sig.returnType)
+    let ts = c.typeToSlot(procDecl.returnType)
     var dummy = default(Location)
     allocResultWin64(regb, ts, dummy)
   var argLocs: seq[Location] = @[]
   for argType in argTypes:
     argLocs.add regb.allocParamWin64(argType)
   reverseStackParamsWin64 argLocs
-
   for i in 0 ..< args.len:
-    genx c, t, args[i], argLocs[i]
+    genx c, args[i], argLocs[i]
 
-  let fn = gen(c, n.firstSon)
-  c.buildTreeI CallT, t[n].info:
+  let fn = gen(c, n)
+  c.buildTreeI CallT, n.info:
     c.emitLoc fn
 
-  if t[sig.returnType].kind in {VoidC, Empty}:
+  if procDecl.returnType.kind == DotToken:
     discard "no return type"
   else:
-    let ts = c.typeToSlot(sig.returnType)
+    let ts = c.typeToSlot(procDecl.returnType)
     stackSpace += stackSpaceResultWin64(ts)
     if dest.kind == Undef:
       dest = resultWin64(ts)
     else:
       c.genMov(dest, resultWin64(ts))
-]#
+
 const
   AddrTyp = AsmSlot(kind: AInt, size: WordSize, align: WordSize, offset: 0)
 
@@ -853,7 +861,7 @@ proc genx(c: var GeneratedCode; n: var Cursor, dest: var Location) =
   #   let typ = AsmSlot(kind: AUInt, size: WordSize, align: WordSize)
   #   let d = immediateLoc(uint(ftyp.offset), typ)
   #   into c, dest, d
-  # of CallC: genCall c, n, dest
+  of CallC: genCall c, n, dest
   of AddC: typedBinOp AddT
   of SubC: typedBinOp SubT
   of MulC: typedBinOp ImulT

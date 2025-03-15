@@ -118,7 +118,7 @@ proc allocRegsForProc(c: var GeneratedCode; n: var Cursor; weights: Table[LitId,
      StaticC, ErrC:
     discard "do not traverse these"
   ]#
-  of RetS, AsgnS:
+  of RetS, AsgnS, CallS:
     inc n
     while n.kind != ParRi: 
       allocRegsForProc c, n, weights
