@@ -841,25 +841,27 @@ proc genx(c: var GeneratedCode; n: var Cursor, dest: var Location) =
     genx c, n, dest
   # of AddrC:
   #   genAddr c, n.firstSon, dest
-  # of SizeofC:
-  #   # we evaluate it at compile-time:
-  #   let a = typeToSlot(c, n.firstSon)
-  #   let typ = AsmSlot(kind: AUInt, size: WordSize, align: WordSize)
-  #   let d = immediateLoc(uint(a.size), typ)
-  #   into c, dest, d
-  # of AlignofC:
-  #   # we evaluate it at compile-time:
-  #   let a = typeToSlot(c, n.firstSon)
-  #   let typ = AsmSlot(kind: AUInt, size: WordSize, align: WordSize)
-  #   let d = immediateLoc(uint(a.align), typ)
-  #   into c, dest, d
-  # of OffsetofC:
-  #   let (obj, fld) = sons2(n)
-  #   let field = t[fld].litId
-  #   let ftyp = c.fields[field]
-  #   let typ = AsmSlot(kind: AUInt, size: WordSize, align: WordSize)
-  #   let d = immediateLoc(uint(ftyp.offset), typ)
-  #   into c, dest, d
+  of SizeofC:
+    inc n
+    # we evaluate it at compile-time:
+    let a = typeToSlot(c, n)
+    let typ = AsmSlot(kind: AUInt, size: WordSize, align: WordSize)
+    let d = immediateLoc(uint(a.size), typ)
+    into c, dest, d
+  of AlignofC:
+    inc n
+    # we evaluate it at compile-time:
+    let a = typeToSlot(c, n)
+    let typ = AsmSlot(kind: AUInt, size: WordSize, align: WordSize)
+    let d = immediateLoc(uint(a.align), typ)
+    into c, dest, d
+  of OffsetofC:
+    inc n
+    skip n # obj typ
+    let ftyp = c.fields[n.symId]
+    let typ = AsmSlot(kind: AUInt, size: WordSize, align: WordSize)
+    let d = immediateLoc(uint(ftyp.offset), typ)
+    into c, dest, d
   of CallC: genCall c, n, dest
   of AddC: typedBinOp AddT
   of SubC: typedBinOp SubT
