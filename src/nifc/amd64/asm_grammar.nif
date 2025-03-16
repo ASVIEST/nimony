@@ -133,6 +133,13 @@
   (jna Label)
   (jae Label)
   (jnae Label)
+  (cvtsi2ss Expr ", " Expr)
+  (cvtsi2sd Expr ", " Expr)
+  (cvttss2si Expr ", " Expr)
+  (cvttsd2si Expr ", " Expr)
+  (cvtps2pd Expr ", " Expr)
+  (cvtpd2ps Expr ", " Expr)
+
   (nop)
   (skip "" ANY)
   (ret)

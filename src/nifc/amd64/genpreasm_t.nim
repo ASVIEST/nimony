@@ -115,13 +115,13 @@ proc traverseTypes(m: Module; o: var TypeOrder) =
     else: discard
 
 template integralBits(c: GeneratedCode; t: Cursor): int =
-  # TODO: implement integralBits
-  #let res = bits(c.m, t)
-  #if res == -1:
-  #  c.intmSize
-  #else: # 8, 16, 32, 64 etc.
-  #  res
-  c.intmSize
+  var n = t
+  let res = pool.integers[n.intId]
+  case res
+  of -1:
+    c.intmSize
+  else: # 8, 16, 32, 64 etc.
+   res
 
 proc genFieldPragmas(c: var GeneratedCode; n: var Cursor;
                      field: var AsmSlot; bits: var BiggestInt) =
@@ -156,7 +156,7 @@ proc setField(c: var GeneratedCode; name: LitId; obj: AsmSlot; t: var AsmSlot) =
   t.offset = obj.size + (obj.size mod t.align)
   c.fields[name] = t
 
-proc fillTypeSlot(c: var GeneratedCode; n: var Cursor; dest: var AsmSlot)
+proc fillTypeSlot(c: var GeneratedCode; n: Cursor; dest: var AsmSlot)
 
 proc genObjectOrUnionBody(c: var GeneratedCode; n: var Cursor;
                    obj: var AsmSlot; isObject: bool) =
@@ -193,17 +193,21 @@ proc inBytes(bits: int): int =
   if bits < 0: 8 # wordsize
   else: bits div 8
 
-proc fillTypeSlot(c: var GeneratedCode; n: var Cursor; dest: var AsmSlot) =
+proc fillTypeSlot(c: var GeneratedCode; n: Cursor; dest: var AsmSlot) =
+  var n = n
   case n.typeKind
   of VoidT:
     error c.m, "internal error: Cannot handle 'void' type: ", n
   of IT:
+    inc n
     let bytes = integralBits(c, n).inBytes
     dest = AsmSlot(kind: AInt, size: bytes, align: bytes)
   of UT, CT:
+    inc n
     let bytes = integralBits(c, n).inBytes
     dest = AsmSlot(kind: AUInt, size: bytes, align: bytes)
   of FT:
+    inc n
     let bytes = integralBits(c, n).inBytes
     dest = AsmSlot(kind: AFloat, size: bytes, align: bytes)
   of BoolT:

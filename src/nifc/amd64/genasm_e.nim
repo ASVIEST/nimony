@@ -501,6 +501,51 @@ proc genFloatLit(c: var GeneratedCode; litId: FloatId; info: PackedLineInfo; des
   let d = Location(typ: AddrTyp, kind: InData, data: pool.syms.getOrIncl(symId))
   into c, dest, d
 
+proc genConv(c: var GeneratedCode; n: var Cursor; dest: var Location) =
+  inc n
+  var destTyp = n
+  var destSlot = AsmSlot()
+  fillTypeSlot c, destTyp, destSlot
+  skip n
+  var fromSlot = AsmSlot()
+  var fromTyp = getType(c.m, n)
+  fillTypeSlot c, fromTyp, fromSlot
+  # Conversions:
+  # int -> float32: cvtsi2ss
+  # int -> float64: cvtsi2sd
+  # float32 -> int: cvttss2si
+  # float64 -> int: cvttsd2si
+  # float32 -> float64: cvtps2pd
+  # float64 -> float32: cvtpd2ps
+  let det = (destTyp.typeKind, fromTyp.typekind)
+  
+  let opc: TagId =
+    if det == (IT, FT):
+      if fromSlot.size == 4: 
+        Cvttss2siT
+      elif fromSlot.size == 8:
+        Cvttsd2siT
+      else: error c.m, "can't convert types", n
+    elif det == (FT, IT):
+      if destSlot.size == 4: Cvtsi2ssT
+      elif destSlot.size == 8: Cvtsi2sdT
+      else:
+        error c.m, "can't convert types", n
+    elif det == (FT, FT):
+      let sz = (destSlot.size, fromSlot.size)
+      if destSlot.size == fromSlot.size: NopT # nothing to do
+      elif sz == (4, 8): Cvtpd2psT
+      elif sz == (8, 4): Cvtps2pdT
+      else:
+        error c.m, "can't convert types", n
+    else:
+      error c.m, "can't convert types", n
+
+  var x = gen(c, n)
+  c.buildTree opc:
+    c.emitLoc dest
+    c.emitLoc x
+
 #[
 proc genConv(c: var GeneratedCode; n: var Cursor; dest: var Location) =
   let (typ, arg) = sons2(n)
@@ -881,8 +926,8 @@ proc genx(c: var GeneratedCode; n: var Cursor, dest: var Location) =
   of LeC: genCmp c, n, dest, JgT
   of LtC: genCmp c, n, dest, JgeT
   # of NotC: genNot c, n.firstSon, dest, Tjmp
-  #of CastC, ConvC:
-  #  genConv c, n
+  of ConvC:
+    genConv c, n, dest
   of SufC:
     genSuffix(c, n, dest)
   of InfC, NegInfC, NanC:
