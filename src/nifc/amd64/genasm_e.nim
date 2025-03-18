@@ -150,7 +150,7 @@ proc genMov(c: var GeneratedCode; dest, src: Location) =
       c.emitLoc dest
       c.emitLoc src
   elif dest.typ.kind == AFloat:
-    c.buildTree MovapdT:
+    c.buildTree MovsdT:
       c.emitLoc dest
       c.emitLoc src
   elif src.kind == InFlag:
@@ -396,7 +396,7 @@ proc genLoad(c: var GeneratedCode; dest: var Location; address: Location) =
     dest = scratchReg(c.rega, address.typ)
   # XXX Floating point? What if it doesn't even fit a register?
 
-  let opc = if address.typ.kind == AFloat: MovapdT else: MovT
+  let opc = if address.typ.kind == AFloat: MovsdT else: MovT
   c.buildTree opc:
     emitLoc c, dest
     c.buildTree Mem1T:
@@ -427,7 +427,7 @@ proc genAsgn(c: var GeneratedCode; n: var Cursor) =
     y = c.makeReg(y)
 
   # XXX also handle case kind == AMem!
-  let opc = if d.typ.kind == AFloat: MovapdT else: MovT
+  let opc = if d.typ.kind == AFloat: MovsdT else: MovT
   c.buildTree opc:
     emitLoc c, d
     emitLoc c, y
@@ -688,7 +688,7 @@ proc binArithOp(c: var GeneratedCode; n: var Cursor; dest: var Location; opc: Ta
     # tmp += b
     let x = gen(c, a)
     let y = gen(c, b)
-    dest = makeReg(c, x, (if x.kind == InRegFp: MovapdT else: MovT))
+    dest = makeReg(c, x, (if x.kind == InRegFp: MovsdT else: MovT))
     c.buildTree opc:
       emitLoc c, dest
       emitLoc c, y
@@ -714,7 +714,7 @@ proc unArithOp(c: var GeneratedCode; n: var Cursor; dest: var Location; opc: Tag
     # tmp = a
     # tmp += b
     let x = gen(c, t, a)
-    dest = makeReg(c, x, (if x.kind == InRegFp: MovapdT else: MovT))
+    dest = makeReg(c, x, (if x.kind == InRegFp: MovsdT else: MovT))
     c.buildTree opc:
       emitLoc c, dest
   else:
