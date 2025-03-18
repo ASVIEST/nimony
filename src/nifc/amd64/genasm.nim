@@ -27,11 +27,17 @@ type
   Scope = object
     vars: seq[LitId]
 
+  Section = enum
+    Data
+    Code
+    Init
+  
   GeneratedCode* = object
     m: Module
     data: TokenBuf
     code: TokenBuf
     init: TokenBuf
+    section: Section
     rega: RegAllocator
     intmSize, inConst, labels, prologAt: int
     loopExits: seq[Label]
@@ -50,7 +56,7 @@ type
   # LitId = nifc_model.StrId
 
 proc initGeneratedCode*(m: sink Module; intmSize: int): GeneratedCode =
-  result = GeneratedCode(m: m, intmSize: intmSize)
+  result = GeneratedCode(m: m, intmSize: intmSize, section: Code)
 
 proc error(m: Module; msg: string; n: Cursor) {.noreturn.} =
   let info = n.info
@@ -68,49 +74,55 @@ proc error(m: Module; msg: string; n: Cursor) {.noreturn.} =
 
 # Atoms
 
+proc tree(c: var GeneratedCode): var TokenBuf {.inline.} =
+  case c.section
+  of Data: result = c.data
+  of Code: result = c.code
+  of Init: result = c.init
+
 proc genIntLit(c: var GeneratedCode; litId: IntId; info: PackedLineInfo) =
-  c.code.addIntLit pool.integers[litId], info
+  c.tree.addIntLit pool.integers[litId], info
 
 proc genIntLit(c: var GeneratedCode; i: BiggestInt; info: PackedLineInfo) =
-  c.code.addIntLit i, info
+  c.tree.addIntLit i, info
 
 proc genIntLit(c: var TokenBuf; i: BiggestInt; info: PackedLineInfo) =
   c.addIntLit i, info
 
 proc genUIntLit(c: var GeneratedCode; litId: UintId; info: PackedLineInfo) =
-  c.code.add uintToken(litId, info)
+  c.tree.add uintToken(litId, info)
 
 proc genUIntLit(c: var GeneratedCode; i: BiggestUInt; info: PackedLineInfo) =
   let id = pool.uintegers.getOrIncl(i)
-  c.code.add uintToken(id, info)
+  c.tree.add uintToken(id, info)
 
 proc genFloatLit(c: var GeneratedCode; litId: FloatId; info: PackedLineInfo) =
-  c.code.add floatToken(litId, info)
+  c.tree.add floatToken(litId, info)
 
 proc genFloatLit(c: var GeneratedCode; i: float; info: PackedLineInfo) =
   let id = pool.floats.getOrIncl(i)
-  c.code.add floatToken(id, info)
+  c.tree.add floatToken(id, info)
 
 proc genCharLit(c: var GeneratedCode; ch: char; info: PackedLineInfo) =
-  c.code.add charToken(ch, info)
+  c.tree.add charToken(ch, info)
 
 proc addIdent(c: var GeneratedCode; s: string; info: PackedLineInfo) =
-  c.code.add identToken(pool.strings.getOrIncl(s), info)
+  c.tree.add identToken(pool.strings.getOrIncl(s), info)
 
 proc addEmpty(c: var GeneratedCode; info: PackedLineInfo) =
-  c.code.add dotToken(info)
+  c.tree.add dotToken(info)
 
 proc addKeyw(c: var GeneratedCode; keyw: TagId; info = NoLineInfo) =
-  c.code.buildTree keyw, info: discard
+  c.tree.buildTree keyw, info: discard
 
 proc addKeywUnchecked(c: var GeneratedCode; keyw: string; info = NoLineInfo) =
-  c.code.buildTree pool.tags.getOrIncl(keyw), info: discard
+  c.tree.buildTree pool.tags.getOrIncl(keyw), info: discard
 
 proc addSymDef(c: var TokenBuf; s: string; info: PackedLineInfo) =
   c.add symdefToken(pool.syms.getOrIncl(s), info)
 
 proc addSym(c: var GeneratedCode; s: string; info: PackedLineInfo) =
-  c.code.add symToken(pool.syms.getOrIncl(s), info)
+  c.tree.add symToken(pool.syms.getOrIncl(s), info)
 
 proc getLabel(c: var GeneratedCode): Label =
   result = Label(c.labels)
@@ -120,22 +132,22 @@ proc useLabel(c: var GeneratedCode; lab: Label; info: PackedLineInfo) =
   c.addSym "L." & $int(lab), info
 
 proc defineTemp(c: var GeneratedCode; tmp: TempVar; info: PackedLineInfo) =
-  c.code.addSymDef "v." & $int(tmp), info
+  c.tree.addSymDef "v." & $int(tmp), info
 
 proc useTemp(c: var GeneratedCode; tmp: TempVar; info: PackedLineInfo) =
   c.addSym "v." & $int(tmp), info
 
 template buildTree(c: var GeneratedCode; keyw: TagId; body: untyped) =
-  c.code.buildTree keyw, NoLineInfo:
+  c.tree.buildTree keyw, NoLineInfo:
     body
 
 template buildTreeI(c: var GeneratedCode; keyw: TagId; info: PackedLineInfo; body: untyped) =
-  c.code.buildTree keyw, info:
+  c.tree.buildTree keyw, info:
     body
 
 proc defineLabel(c: var GeneratedCode; lab: Label; info: PackedLineInfo; opc = LabT) =
-  c.code.buildTree opc, info:
-    c.code.addSymDef "L." & $int(lab), info
+  c.tree.buildTree opc, info:
+    c.tree.addSymDef "L." & $int(lab), info
 
 # Type graph
 
@@ -145,7 +157,7 @@ include genpreasm_t
 
 proc genWas(c: var GeneratedCode; n: var Cursor) =
   skip n # TODO: fix was
-  # c.code.buildTree(CommentT, t[ch].info):
+  # c.tree.buildTree(CommentT, t[ch].info):
   #  c.addIdent toString(t, ch.firstSon, c.m), t[ch].info
 
 type
@@ -188,7 +200,7 @@ proc genSymDef(c: var GeneratedCode; n: Cursor): string =
   if n.kind == SymbolDef:
     let lit = n.symId
     result = pool.syms[lit]
-    c.code.addSymDef result, n.info
+    c.tree.addSymDef result, n.info
   else:
     error c.m, "expected SymbolDef but got: ", n
     result = ""
@@ -227,14 +239,13 @@ proc genVarPragmas(c: var GeneratedCode; t: Tree; n: NodePos; alignOverride: var
   else:
     error c.m, "expected pragmas but got: ", t, n
 ]#
-include genasm_e
 
 template moveToDataSection(body: untyped) =
-  let oldLen = c.code.len
+  c.section = Data
   body
-  for i in oldLen ..< c.code.len:
-    c.data.add c.code[i]
-  shrink c.code, oldLen
+  c.section = Code
+
+include genasm_e
 
 include register_allocator
 include genasm_s

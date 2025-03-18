@@ -474,12 +474,13 @@ proc genStrLit(c: var GeneratedCode; s: string; info: PackedLineInfo; dest: var 
     id = c.strings.len + 1
     c.strings[s] = id
     symId = "str." & $id
-    c.data.buildTree RodataT, info:
-      c.data.addSymDef symId, info
-      c.data.buildTree StringT, info:
-        c.data.addStrLit s, info
-      c.data.buildTree ByteT, info:
-        c.data.genIntLit 0, info
+    moveToDataSection:
+      c.tree.buildTree RodataT, info:
+        c.tree.addSymDef symId, info
+        c.tree.buildTree StringT, info:
+          c.tree.addStrLit s, info
+        c.tree.buildTree ByteT, info:
+          c.tree.genIntLit 0, info
   else:
     symId = "str." & $id
   let d = Location(typ: AddrTyp, kind: InData, data: pool.syms.getOrIncl(symId))
@@ -492,10 +493,11 @@ proc genFloatLit(c: var GeneratedCode; litId: FloatId; info: PackedLineInfo; des
     id = c.floats.len + 1
     c.floats[litId] = id
     symId = "flt." & $id
-    c.data.buildTree RodataT, info:
-      c.data.addSymDef symId, info
-      c.data.buildTree QuadT, info:
-        c.genFloatLit(litId, info)
+    moveToDataSection:
+      c.tree.buildTree RodataT, info:
+        c.tree.addSymDef symId, info
+        c.tree.buildTree QuadT, info:
+          c.genFloatLit(litId, info)
   else:
     symId = "flt." & $id
   let d = Location(typ: AddrTyp, kind: InData, data: pool.syms.getOrIncl(symId))

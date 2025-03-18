@@ -14,9 +14,10 @@
 (RULE :DataDecl SYMBOLDEF ":" (DO "nl") (ONE_OR_MANY (OR
   (string ".string " DataKey)
   (byte ".byte " DataKey)
-  (word ".2byte " DataKey)
-  (long ".4byte " DataKey)
-  (quad ".8byte " DataKey)
+  (word ".short " DataKey)
+  (long ".long " DataKey)
+  (quad ".quad " DataKey)
+
 )) (DO "nl"))
 
 (RULE :Data (data ".section .bss" (DO "nl") (ZERO_OR_MANY DataDecl)) (DO "nl"))

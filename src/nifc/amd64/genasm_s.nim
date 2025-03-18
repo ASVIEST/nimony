@@ -82,7 +82,7 @@ proc genLabel(c: var GeneratedCode; n: var Cursor) =
     let lit = t[dname].litId
     let name = c.m.lits.strings[lit]
     c.buildTreeI LabT, t[n].info:
-      c.code.addSymDef name, t[dname].info
+      c.tree.addSymDef name, t[dname].info
   else:
     error c.m, "expected SymbolDef but got: ", t, n
 
@@ -144,7 +144,7 @@ proc genSwitch(c: var GeneratedCode; t: Tree; caseStmt: NodePos) =
   let selector = caseStmt.firstSon
   let seltyp = getAsmSlot(c, selector)
   let info = t[selector].info
-  c.code.buildTree VarT, info:
+  c.tree.buildTree VarT, info:
     c.defineTemp sel, info
     c.addEmpty info # no pragmas
     genSlot c, seltyp, info
@@ -199,7 +199,7 @@ proc genSwitch(c: var GeneratedCode; t: Tree; caseStmt: NodePos) =
 ]#
 
 proc genProlog*(c: var GeneratedCode) =
-  c.prologAt = c.code.len # will be patched later
+  c.prologAt = c.tree.len # will be patched later
   c.buildTree SkipT:
     #          ^ might be patched to be `sub`
     c.addKeyw RspT
@@ -209,16 +209,16 @@ proc fixupStackOffset(c: var GeneratedCode; j, s: int) =
   var k = j-1
   var patchPos = j+2
   # figure out which instruction we're in:
-  while k >= c.prologAt and c.code[k].kind != ParLe: dec k
-  while patchPos+1 < c.code.len:
-    if c.code[patchPos].kind == IntLit and c.code[patchPos+1].kind == ParRi:
+  while k >= c.prologAt and c.tree[k].kind != ParLe: dec k
+  while patchPos+1 < c.tree.len:
+    if c.tree[patchPos].kind == IntLit and c.tree[patchPos+1].kind == ParRi:
       break
     inc patchPos
-  let t = c.code[k].tag
+  let t = c.tree[k].tag
   if t == Mem2T or t == Mem4T:
-    let newOffset = pool.integers[c.code[patchPos].intId] + s
+    let newOffset = pool.integers[c.tree[patchPos].intId] + s
     let sid = pool.integers.getOrIncl(newOffset)
-    c.code[patchPos] = intToken(sid, NoLineInfo)
+    c.tree[patchPos] = intToken(sid, NoLineInfo)
   elif t == Mem3T:
     assert false, "should have been a Mem4T instruction"
   else:
@@ -231,18 +231,18 @@ proc fixupProlog(c: var GeneratedCode) =
   if s > 0:
     # patch the tokens
     # SkipT becomes SubT:
-    c.code[i] = parLeToken(SubT, NoLineInfo)
+    c.tree[i] = parLeToken(SubT, NoLineInfo)
     # i+1: (rsp
     # i+2: )
     # i+3: 0
     let sid = pool.integers.getOrIncl(s)
-    c.code[i+3] = intToken(sid, NoLineInfo)
+    c.tree[i+3] = intToken(sid, NoLineInfo)
     # i+4: )
     # Now also fixup every address that used `rsp` as it's off
     # by the offset
-    for j in i+4 ..< c.code.len:
+    for j in i+4 ..< c.tree.len:
       # patch all addresses that use `rsp2` as these are off by `s`:
-      if c.code[j].kind == ParLe and c.code[j].tagId == Rsp2T:
+      if c.tree[j].kind == ParLe and c.tree[j].tagId == Rsp2T:
         fixupStackOffset(c, j, s)
 
 proc genEpilog*(c: var GeneratedCode) =
@@ -380,13 +380,13 @@ proc genGlobalVar(c: var GeneratedCode; n: var Cursor) =
 
   if n.stmtKind == ConstS:
     c.buildTreeI RodataT, n.info:
-      c.code.addSymDef pool.syms[lit], decl.name.info
+      c.tree.addSymDef pool.syms[lit], decl.name.info
       c.buildTree opc:
         c.genConstData decl.value
 
   else:
     c.buildTreeI DataT, n.info:
-      c.code.addSymDef pool.syms[lit], decl.name.info
+      c.tree.addSymDef pool.syms[lit], decl.name.info
       c.buildTree opc:
         c.buildTree TimesT:
           c.genIntLit d.typ.size div min(d.typ.align, 8), n.info

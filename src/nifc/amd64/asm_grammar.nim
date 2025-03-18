@@ -144,7 +144,7 @@ proc genDataDecl(c: var Context): bool =
         break or5
       var kw8 = false
       if isTag(c, WordT):
-        emit(c, ".2byte ")
+        emit(c, ".short ")
         if not genDataKey(c):
           error(c, "DataKey expected")
         kw8 = matchParRi(c)
@@ -153,7 +153,7 @@ proc genDataDecl(c: var Context): bool =
         break or5
       var kw9 = false
       if isTag(c, LongT):
-        emit(c, ".4byte ")
+        emit(c, ".long ")
         if not genDataKey(c):
           error(c, "DataKey expected")
         kw9 = matchParRi(c)
@@ -162,7 +162,7 @@ proc genDataDecl(c: var Context): bool =
         break or5
       var kw10 = false
       if isTag(c, QuadT):
-        emit(c, ".8byte ")
+        emit(c, ".quad ")
         if not genDataKey(c):
           error(c, "DataKey expected")
         kw10 = matchParRi(c)

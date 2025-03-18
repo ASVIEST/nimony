@@ -53,7 +53,7 @@ proc matchUIntLit(c: var Context): bool =
 
 proc matchFloatLit(c: var Context): bool =
   if c.current.kind == FloatLit:
-    c.dest.add $pool.floats[c.current.floatId]
+    c.dest.add $cast[int64](pool.floats[c.current.floatId])
     inc c.current
     result = true
   else:
