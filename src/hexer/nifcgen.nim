@@ -13,7 +13,6 @@ include nifprelude
 import symparser
 import typekeys
 import ".." / nimony / [nimony_model, programs, typenav, expreval, xints, decls, builtintypes, sizeof, typeprops]
-from ".." / nimony / sigmatch import isSomeStringType, isStringType
 import hexer_context, pipeline
 import  ".." / lib / stringtrees
 
@@ -632,7 +631,7 @@ proc parsePragmas(c: var EContext; n: var Cursor): CollectedPragmas =
           expectIntLit c, n
           result.bits = n.intId
           inc n
-        of RequiresP, EnsuresP, StringP, RaisesP, ErrorP:
+        of RequiresP, EnsuresP, StringP, RaisesP, ErrorP, AssumeP, AssertP:
           skip n
           continue
         of BuildP, EmitP:
@@ -661,6 +660,23 @@ proc traverseProcBody(c: var EContext; n: var Cursor) =
   else:
     traverseStmt c, n, TraverseAll
 
+template moveToTopLevel(c: var EContext; mode: TraverseMode; body: typed) =
+  if mode == TraverseAll:
+    swap c.dest, c.pending
+    body
+    swap c.dest, c.pending
+  else:
+    body
+
+proc makeLocalProcDeclName(c: var EContext; s: SymId): string =
+  result = pool.syms[s]
+  extractBasename(result)
+  result.add "."
+  result.addInt c.localDeclCounters
+  inc c.localDeclCounters
+  result.add "."
+  result.add c.main
+
 proc traverseProc(c: var EContext; n: var Cursor; mode: TraverseMode) =
   c.openMangleScope()
   var dst = createTokenBuf(50)
@@ -674,8 +690,15 @@ proc traverseProc(c: var EContext; n: var Cursor; mode: TraverseMode) =
   inc n
   let (s, sinfo) = getSymDef(c, n)
 
-  # namePos
-  c.dest.add symdefToken(s, sinfo)
+  if mode == TraverseAll:
+    # namePos
+    let newName = makeLocalProcDeclName(c, s)
+    let newSymId = pool.syms.getOrIncl(newName)
+    c.dest.add symdefToken(newSymId, sinfo)
+    registerMangleInParent(c, s, newName)
+  else:
+    # namePos
+    c.dest.add symdefToken(s, sinfo)
   c.offer s
 
   var isGeneric = false
@@ -1079,10 +1102,15 @@ proc traverseExpr(c: var EContext; n: var Cursor) =
       let arg = suf
       skip suf
       assert suf.kind == StringLit
-      if arg.kind == StringLit and pool.strings[suf.litId] in ["R", "T"]:
-        # cstring conversion
+      if arg.kind == StringLit:
+        # no suffix for string literal in nifc
         inc n
-        traverseExpr c, n # adds string lit directly
+        if pool.strings[suf.litId] == "C":
+          # cstring literal, add string lit directly:
+          c.dest.add n
+          inc n
+        else:
+          traverseExpr c, n
         inc n # suf
         skipParRi c, n
       else:
@@ -1317,7 +1345,14 @@ proc traverseCase(c: var EContext; n: var Cursor) =
         inc n
         c.add "ranges", n.info
         while n.kind != ParRi:
-          traverseExpr c, n
+          if n.kind == ParLe and n.substructureKind == RangeU:
+            inc n
+            c.add "range", n.info
+            while n.kind != ParRi:
+              traverseExpr c, n
+            takeParRi c, n
+          else:
+            traverseExpr c, n
         takeParRi c, n
       else:
         traverseExpr c, n
@@ -1387,6 +1422,11 @@ proc traverseStmt(c: var EContext; n: var Cursor; mode = TraverseAll) =
         if n.kind == StringLit:
           c.dest.add n
           inc n
+        elif n.exprkind == SufX:
+          inc n
+          assert n.kind == StringLit
+          c.dest.add n
+          skipToEnd n
         else:
           traverseExpr c, n
     of AsgnS, RetS:
@@ -1415,7 +1455,8 @@ proc traverseStmt(c: var EContext; n: var Cursor; mode = TraverseAll) =
     of TryS, RaiseS:
       error c, "BUG: not implemented: ", n
     of FuncS, ProcS, ConverterS, MethodS:
-      traverseProc c, n, mode
+      moveToTopLevel(c, mode):
+        traverseProc c, n, mode
     of MacroS, TemplateS, IncludeS, ImportS, FromimportS, ImportExceptS, ExportS, CommentS, IteratorS,
        ImportasS, ExportexceptS, BindS, MixinS, UsingS, StaticstmtS:
       # pure compile-time construct, ignore:
@@ -1424,7 +1465,7 @@ proc traverseStmt(c: var EContext; n: var Cursor; mode = TraverseAll) =
       traverseTypeDecl c, n
     of ContinueS, WhenS:
       error c, "unreachable: ", n
-    of PragmasS:
+    of PragmasS, AssumeS, AssertS:
       skip n
   else:
     error c, "statement expected, but got: ", n
@@ -1592,7 +1633,8 @@ proc expand*(infile: string, bits: int) =
     dest: createTokenBuf(),
     nestedIn: @[(StmtsS, SymId(0))],
     typeCache: createTypeCache(),
-    bits: bits
+    bits: bits,
+    localDeclCounters: 1000
     )
   c.openMangleScope()
 

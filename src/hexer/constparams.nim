@@ -19,6 +19,7 @@ import std / [sets, assertions]
 
 include nifprelude
 import ".." / nimony / [nimony_model, decls, programs, typenav, sizeof]
+import ".." / models / tags
 import duplifier
 
 type
@@ -46,6 +47,9 @@ proc trProcDecl(c: var Context; dest: var TokenBuf; n: var Cursor) =
   copyInto(dest, n):
     let isConcrete = c2.typeCache.takeRoutineHeader(dest, n)
     if isConcrete:
+      let symId = r.name.symId
+      if isLocalProcDecl(symId):
+        c.typeCache.registerLocal(symId, r.kind, r.params)
       rememberConstRefParams c2, r.params
       tr c2, dest, n
     else:
@@ -82,7 +86,7 @@ proc trCall(c: var Context; dest: var TokenBuf; n: var Cursor) =
   inc n # skip `(call)`
   var fnType = skipProcTypeToParams(getType(c.typeCache, n))
   takeTree dest, n # skip `fn`
-  assert fnType == "params"
+  assert fnType.tagEnum == ParamsTagId
   inc fnType
   while n.kind != ParRi:
     let previousFormalParam = fnType

@@ -7,6 +7,7 @@
 ## Infer `le` ("less or equal") properties for compile-time array index checking
 ## and also for "not nil" checking.
 
+import std/assertions
 import xints
 
 type
@@ -29,10 +30,15 @@ const
   InvalidVarId* = VarId(-1)
 
 proc isValid*(x: LeXplusC): bool {.inline.} =
-  result = x.a != InvalidVarId
+  result = x.a != InvalidVarId and x.b != InvalidVarId and not isNaN(x.c)
 
 proc len*(f: Facts): int {.inline.} = f.x.len
 proc `[]`*(f: Facts; i: int): lent LeXplusC {.inline.} = f.x[i]
+
+proc `$`*(f: LeXplusC): string =
+  let a = if f.a == VarId(0): "0" else: "v" & $f.a.int
+  let b = if f.b == VarId(0): "0" else: "v" & $f.b.int
+  result = a & " <= " & b & " + " & $f.c
 
 proc shrink*(f: var Facts; newLen: int) {.inline.} =
   f.x.shrink newLen
@@ -79,18 +85,19 @@ proc ltXplusC*(f: LeXplusC): LeXplusC =
   # a < b + c  --> a <= b + c - 1
   result = LeXplusC(a: f.a, b: f.b, c: f.c - createXint(1'i64))
 
-proc negFact*(f: var LeXplusC) =
+proc negateFact*(f: var LeXplusC) =
   # not (a <= b + c)
   # -->
-  # a >= b + c - 1
-  # a - c + 1 >= b
-  # b <= a + (1 - c)
-  f.c = createXint(1'i64) - f.c
+  # a > b + c
+  # a >= b + c + 1
+  # a - c - 1 >= b
+  # b <= a - c - 1
+  f.c = -f.c - createXint(1'i64)
   swap f.a, f.b
 
 proc negateFacts*(f: var Facts; start: int) =
   for i in start ..< f.x.len:
-    negFact(f.x[i])
+    negateFact(f.x[i])
 
 proc variableChangedByDiff*(f: var Facts; x: VarId; diff: xint) =
   # after `inc x` we know that x is now bigger by 1 so all
@@ -173,7 +180,27 @@ proc complexImplies(facts: Facts; v: LeXplusC): bool =
   traverseAllPaths(facts, v.a, v, result)
 
 proc implies*(facts: Facts; v: LeXplusC): bool =
+  assert v.isValid
   result = simpleImplies(facts, v) or complexImplies(facts, v)
+
+proc merge*(x: Facts; xstart: int; y: Facts; negate: bool): Facts =
+  # computes thing we know on a joint point.
+  # we know that `a <= b + c` and `a <= b + d` then we know
+  # that `a <= b + max(c, d)`
+  result = Facts()
+  for i in 0 ..< xstart:
+    for j in 0..<y.len:
+      let ya = y[j]
+      if x[i].a == ya.a and x[i].b == ya.b:
+        result.x.add LeXplusC(a: x[i].a, b: x[i].b, c: max(x[i].c, ya.c))
+
+  for i in xstart ..< x.len:
+    for j in 0..<y.len:
+      var ya = y[j]
+      if negate:
+        ya.negateFact()
+      if x[i].a == ya.a and x[i].b == ya.b:
+        result.x.add LeXplusC(a: x[i].a, b: x[i].b, c: max(x[i].c, ya.c))
 
 when isMainModule:
   proc main =

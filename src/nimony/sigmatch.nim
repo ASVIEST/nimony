@@ -9,6 +9,7 @@ import std / [sets, tables, assertions]
 import bitabs, nifreader, nifstreams, nifcursors, lineinfos
 
 import nimony_model, decls, programs, semdata, typeprops, xints, builtintypes, renderer, symparser
+import ".." / models / tags
 
 type
   Item* = object
@@ -69,9 +70,6 @@ proc createMatch*(context: ptr SemContext): Match = Match(context: context, firs
 proc concat(a: varargs[string]): string =
   result = a[0]
   for i in 1..high(a): result.add a[i]
-
-proc typeToString*(n: Cursor): string =
-  result = asNimCode(n)
 
 proc error(m: var Match; k: MatchErrorKind; expected, got: Cursor) =
   if m.err: return # first error is the important one
@@ -244,8 +242,10 @@ proc matchesConstraintAux(m: var Match; f: var Cursor; a: Cursor): bool =
     skip f
   of TypeKindT:
     var aTag = a
-    if a.kind == Symbol:
-      aTag = typeImpl(a.symId)
+    if aTag.typeKind == InvokeT:
+      inc aTag
+    if aTag.kind == Symbol:
+      aTag = typeImpl(aTag.symId)
     if aTag.typeKind == TypeKindT:
       inc aTag
     inc f
@@ -671,13 +671,6 @@ proc matchArrayType(m: var Match; f: var Cursor; a: var Cursor) =
   else:
     m.error InvalidMatch, f, a
 
-proc isStringType*(a: Cursor): bool {.inline.} =
-  result = a.kind == Symbol and a.symId == pool.syms.getOrIncl(StringName)
-  #a.typeKind == StringT: StringT now unused!
-
-proc isSomeStringType*(a: Cursor): bool {.inline.} =
-  result = a.typeKind == CstringT or isStringType(a)
-
 proc isSomeSeqType*(a: Cursor, elemType: var Cursor): bool =
   # check that `a` is either an instantiation of seq or an invocation to it
   result = false
@@ -987,7 +980,7 @@ proc sigmatchLoop(m: var Match; f: var Cursor; args: openArray[Item]) =
     var ftyp = param.typ
     # This is subtle but only this order of `i >= args.len` checks
     # is correct for all cases (varargs/too few args/too many args)
-    if ftyp != "varargs":
+    if ftyp.tagEnum != VarargsTagId:
       if i >= args.len: break
       skip f
     else:
@@ -1073,7 +1066,7 @@ proc sigmatch*(m: var Match; fn: FnCandidate; args: openArray[Item];
   matchTypevars m, fn, explicitTypeVars
 
   var f = fn.typ
-  assert f == "params"
+  assert f.isParamsTag
   inc f # "params"
   sigmatchLoop m, f, args
 
