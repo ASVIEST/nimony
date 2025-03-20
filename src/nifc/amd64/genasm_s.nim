@@ -366,6 +366,7 @@ proc genGlobalVar(c: var GeneratedCode; n: var Cursor) =
   var decl = takeVarDecl(n)
   assert decl.name.kind == SymbolDef
   let lit = decl.name.symId
+  c.m.registerLocal(lit, decl.typ)
   var d = Location(flags: {Indirect}, typ: typeToSlot(c, decl.typ), kind: where)
   d.data = lit
   c.globals[lit] = d
@@ -377,26 +378,27 @@ proc genGlobalVar(c: var GeneratedCode; n: var Cursor) =
     of 4: LongT
     of 8: QuadT
     else: QuadT # bigger alignments are not really supported for now?
+  
+  moveToDataSection:
+    if n.stmtKind == ConstS:
+      c.buildTreeI RodataT, n.info:
+        c.tree.addSymDef pool.syms[lit], decl.name.info
+        c.buildTree opc:
+          c.genConstData decl.value
 
-  if n.stmtKind == ConstS:
-    c.buildTreeI RodataT, n.info:
-      c.tree.addSymDef pool.syms[lit], decl.name.info
-      c.buildTree opc:
-        c.genConstData decl.value
-
-  else:
-    c.buildTreeI DataT, n.info:
-      c.tree.addSymDef pool.syms[lit], decl.name.info
-      c.buildTree opc:
-        c.buildTree TimesT:
-          c.genIntLit d.typ.size div min(d.typ.align, 8), n.info
-          c.genIntLit 0, n.info
-
-    if decl.value.kind == DotToken:
-      inc n
     else:
-      # generate the assignment:
-      genx c, decl.value, d
+      c.buildTreeI DataT, n.info:
+        c.tree.addSymDef pool.syms[lit], decl.name.info
+        c.buildTree opc:
+          c.buildTree TimesT:
+            c.genIntLit d.typ.size div min(d.typ.align, 8), n.info
+            c.genIntLit 0, n.info
+  
+  if decl.value.kind == DotToken:
+    inc n
+  else:
+    # generate the assignment:
+    genx c, decl.value, d
 
 proc genStmt(c: var GeneratedCode; n: var Cursor) =
   case n.stmtKind
@@ -417,8 +419,7 @@ proc genStmt(c: var GeneratedCode; n: var Cursor) =
     genLocalVar c, n
     # skip n
   of GvarS, TvarS, ConstS:
-    moveToDataSection:
-      genGlobalVar c, n
+    genGlobalVar c, n
   #of EmitC:
   #  genEmitStmt c, t, n
   of AsgnS: genAsgn c, n

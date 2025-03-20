@@ -95,11 +95,14 @@ proc genDataKey(c: var Context): bool =
       break or3
     var kw4 = false
     if isTag(c, TimesT):
-      emitTag(c, "times")
+      emit(c, ".rept ")
       if not matchIntLit(c):
         error(c, "INTLIT expected")
+      nl(c)
       if not genDataValue(c):
         error(c, "DataValue expected")
+      nl(c)
+      emit(c, ".endr")
       kw4 = matchParRi(c)
     if kw4:
       or2 = true

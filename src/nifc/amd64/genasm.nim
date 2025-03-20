@@ -29,7 +29,7 @@ type
 
   Section = enum
     Data
-    Code
+    Text
     Init
   
   GeneratedCode* = object
@@ -56,7 +56,7 @@ type
   # LitId = nifc_model.StrId
 
 proc initGeneratedCode*(m: sink Module; intmSize: int): GeneratedCode =
-  result = GeneratedCode(m: m, intmSize: intmSize, section: Code)
+  result = GeneratedCode(m: m, intmSize: intmSize, section: Text)
 
 proc error(m: Module; msg: string; n: Cursor) {.noreturn.} =
   let info = n.info
@@ -77,7 +77,7 @@ proc error(m: Module; msg: string; n: Cursor) {.noreturn.} =
 proc tree(c: var GeneratedCode): var TokenBuf {.inline.} =
   case c.section
   of Data: result = c.data
-  of Code: result = c.code
+  of Text: result = c.code
   of Init: result = c.init
 
 proc genIntLit(c: var GeneratedCode; litId: IntId; info: PackedLineInfo) =
@@ -120,6 +120,9 @@ proc addKeywUnchecked(c: var GeneratedCode; keyw: string; info = NoLineInfo) =
 
 proc addSymDef(c: var TokenBuf; s: string; info: PackedLineInfo) =
   c.add symdefToken(pool.syms.getOrIncl(s), info)
+
+proc addSym(c: var GeneratedCode; s: SymId; info: PackedLineInfo) =
+  c.tree.add symToken(s, info)
 
 proc addSym(c: var GeneratedCode; s: string; info: PackedLineInfo) =
   c.tree.add symToken(pool.syms.getOrIncl(s), info)
@@ -243,7 +246,7 @@ proc genVarPragmas(c: var GeneratedCode; t: Tree; n: NodePos; alignOverride: var
 template moveToDataSection(body: untyped) =
   c.section = Data
   body
-  c.section = Code
+  c.section = Text
 
 include genasm_e
 

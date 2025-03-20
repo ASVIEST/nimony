@@ -10,7 +10,7 @@
 (RULE :ExternDecl (extern SYMBOLDEF (DO "nl")))
 
 (RULE :DataValue (OR STRINGLITERAL INTLIT UINTLIT FLOATLIT))
-(RULE :DataKey (OR DataValue (times INTLIT DataValue)) (DO "nl"))
+(RULE :DataKey (OR DataValue (times ".rept " INTLIT (DO "nl") DataValue (DO "nl") ".endr")) (DO "nl"))
 (RULE :DataDecl SYMBOLDEF ":" (DO "nl") (ONE_OR_MANY (OR
   (string ".string " DataKey)
   (byte ".byte " DataKey)

@@ -149,8 +149,12 @@ proc matchAny(c: var Context): bool =
 proc nl(c: var Context) = c.dest.add "\n"
 
 proc lookupSym(c: var Context): bool =
-  if c.current.kind == Symbol:
-    c.dest.add mangle(pool.syms[c.current.symId])
+  if c.current.kind in {Symbol, Ident}:
+    if c.current.kind == Symbol: c.dest.add mangle(pool.syms[c.current.symId])
+    else: c.dest.add mangle(pool.strings[c.current.litId])
+      # allowing ident is very strange bug, 
+      # for some unknown reason Symbol turns into Ident
+      # so it realy need
     inc c.current
     result = true
   else:
