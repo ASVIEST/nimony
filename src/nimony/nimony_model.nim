@@ -8,25 +8,27 @@ import std / assertions
 include nifprelude
 import stringviews
 
-import ".." / models / [nimony_tags, callconv_tags]
+import ".." / models / [tags, nimony_tags, callconv_tags]
 export nimony_tags, callconv_tags
 
+template tagEnum*(c: Cursor): TagEnum = cast[TagEnum](tag(c))
+
 proc stmtKind*(c: Cursor): NimonyStmt {.inline.} =
-  if c.kind == ParLe and rawTagIsNimonyStmt(tag(c).uint32):
-    result = cast[NimonyStmt](tag(c))
+  if c.kind == ParLe and rawTagIsNimonyStmt(tagEnum(c)):
+    result = cast[NimonyStmt](tagEnum(c))
   else:
     result = NoStmt
 
 proc pragmaKind*(c: Cursor): NimonyPragma {.inline.} =
   if c.kind == ParLe:
-    let tagId = c.tagId.uint32
-    if rawTagIsNimonyPragma(tagId):
-      result = cast[NimonyPragma](tagId)
+    let e = tagEnum(c)
+    if rawTagIsNimonyPragma(e):
+      result = cast[NimonyPragma](e)
     else:
       result = NoPragma
   elif c.kind == Ident:
     let tagId = pool.tags.getOrIncl(pool.strings[c.litId])
-    if rawTagIsNimonyPragma(tagId.uint32):
+    if rawTagIsNimonyPragma(cast[TagEnum](tagId)):
       result = cast[NimonyPragma](tagId)
     else:
       result = NoPragma
@@ -34,15 +36,15 @@ proc pragmaKind*(c: Cursor): NimonyPragma {.inline.} =
     result = NoPragma
 
 proc substructureKind*(c: Cursor): NimonyOther {.inline.} =
-  if c.kind == ParLe and rawTagIsNimonyOther(tag(c).uint32):
+  if c.kind == ParLe and rawTagIsNimonyOther(tagEnum(c)):
     result = cast[NimonyOther](tag(c))
   else:
     result = NoSub
 
 proc typeKind*(c: Cursor): NimonyType {.inline.} =
   if c.kind == ParLe:
-    if rawTagIsNimonyType(tag(c).uint32):
-      result = cast[NimonyType](tag(c))
+    if rawTagIsNimonyType(tagEnum(c)):
+      result = cast[NimonyType](tagEnum(c))
     else:
       result = NoType
   elif c.kind == DotToken:
@@ -52,13 +54,13 @@ proc typeKind*(c: Cursor): NimonyType {.inline.} =
 
 proc callConvKind*(c: Cursor): CallConv {.inline.} =
   if c.kind == ParLe:
-    if rawTagIsCallConv(tag(c).uint32):
+    if rawTagIsCallConv(tagEnum(c)):
       result = cast[CallConv](tag(c))
     else:
       result = NoCallConv
   elif c.kind == Ident:
     let tagId = pool.tags.getOrIncl(pool.strings[c.litId])
-    if rawTagIsCallConv(tagId.uint32):
+    if rawTagIsCallConv(cast[TagEnum](tagId)):
       result = cast[CallConv](tagId)
     else:
       result = NoCallConv
@@ -67,8 +69,8 @@ proc callConvKind*(c: Cursor): CallConv {.inline.} =
 
 proc exprKind*(c: Cursor): NimonyExpr {.inline.} =
   if c.kind == ParLe:
-    if rawTagIsNimonyExpr(tag(c).uint32):
-      result = cast[NimonyExpr](tag(c))
+    if rawTagIsNimonyExpr(tagEnum(c)):
+      result = cast[NimonyExpr](tagEnum(c))
     else:
       result = NoExpr
   else:
@@ -76,8 +78,8 @@ proc exprKind*(c: Cursor): NimonyExpr {.inline.} =
 
 proc symKind*(c: Cursor): NimonySym {.inline.} =
   if c.kind == ParLe:
-    if rawTagIsNimonySym(tag(c).uint32):
-      result = cast[NimonySym](tag(c))
+    if rawTagIsNimonySym(tagEnum(c)):
+      result = cast[NimonySym](tagEnum(c))
     else:
       result = NoSym
   else:
@@ -85,14 +87,14 @@ proc symKind*(c: Cursor): NimonySym {.inline.} =
 
 proc cfKind*(c: Cursor): ControlFlowKind {.inline.} =
   if c.kind == ParLe:
-    if rawTagIsControlFlowKind(tag(c).uint32):
-      result = cast[ControlFlowKind](tag(c))
+    if rawTagIsControlFlowKind(tagEnum(c)):
+      result = cast[ControlFlowKind](tagEnum(c))
     else:
       result = NoControlFlow
   else:
     result = NoControlFlow
 
-template `==`*(n: Cursor; s: string): bool = n.kind == ParLe and pool.tags[n.tagId] == s
+template isParamsTag*(c: Cursor): bool = c.tagEnum == ParamsTagId
 
 # Outdated aliases:
 type
@@ -262,18 +264,23 @@ proc hookName*(op: HookKind): string =
 const
   NoSymId* = SymId(0)
 
-proc hasPragma*(n: Cursor; kind: PragmaKind): bool =
-  result = false
+proc extractPragma*(n: Cursor; kind: PragmaKind): Cursor =
   var n = n
-  if n.kind == DotToken:
-    discard
-  else:
+  if n.kind != DotToken:
     inc n
     while n.kind != ParRi:
       if pragmaKind(n) == kind:
-        result = true
-        break
+        inc n
+        return n
       skip n
+  result = default(Cursor)
+
+proc hasPragma*(n: Cursor; kind: PragmaKind): bool =
+  result = not cursorIsNil(extractPragma(n, kind))
+
+proc hasPragmaOfValue*(n: Cursor; kind: PragmaKind; val: string): bool =
+  let p = extractPragma(n, kind)
+  result = not cursorIsNil(p) and p.kind == StringLit and pool.strings[p.litId] == val
 
 proc addSymUse*(dest: var TokenBuf; s: SymId; info: PackedLineInfo) =
   dest.add symToken(s, info)

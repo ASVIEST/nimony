@@ -1,6 +1,7 @@
 import std/assertions
 include nifprelude
 import nimony_model, decls, xints, semdata, programs, nifconfig
+import ".." / models / tags
 
 const
   DefaultSetElements* = createXint(1'u64 shl 8)
@@ -15,6 +16,9 @@ proc typebits*(config: NifConfig; n: PackedToken): int =
     result = 0
   if result == -1:
     result = config.bits
+
+proc isOrdinalTypeKind*(kind: TypeKind): bool {.inline.} =
+  result = kind in {EnumT, IntT, UIntT, CharT, BoolT, RangetypeT}
 
 proc isOrdinalType*(typ: TypeCursor; allowEnumWithHoles: bool = false): bool =
   case typ.kind
@@ -209,7 +213,7 @@ proc containsGenericParams*(n: TypeCursor): bool =
     case n.kind
     of Symbol:
       let res = tryLoadSym(n.symId)
-      if res.status == LacksNothing and res.decl == $TypevarY:
+      if res.status == LacksNothing and res.decl.tagEnum == TypevarTagId:
         return true
     of ParLe:
       inc nested

@@ -8,7 +8,8 @@ import std / [sets, tables, assertions]
 
 import bitabs, nifreader, nifstreams, nifcursors, lineinfos
 
-import nimony_model, decls, programs, semdata, typeprops, xints, builtintypes, renderer, symparser
+import nimony_model, decls, programs, semdata, typeprops, xints, builtintypes, renderer, symparser, asthelpers
+import ".." / models / tags
 
 type
   Item* = object
@@ -19,6 +20,7 @@ type
     kind*: SymKind
     sym*: SymId
     typ*: Cursor
+    fromConcept*: bool
 
   MatchErrorKind* = enum
     InvalidMatch
@@ -38,6 +40,8 @@ type
     CouldNotInferTypeVar
     TooManyArguments
     TooFewArguments
+    NameNotFound
+    ParamAlreadyGiven
 
   MatchError* = object
     info: PackedLineInfo
@@ -69,9 +73,6 @@ proc createMatch*(context: ptr SemContext): Match = Match(context: context, firs
 proc concat(a: varargs[string]): string =
   result = a[0]
   for i in 1..high(a): result.add a[i]
-
-proc typeToString*(n: Cursor): string =
-  result = asNimCode(n)
 
 proc error(m: var Match; k: MatchErrorKind; expected, got: Cursor) =
   if m.err: return # first error is the important one
@@ -137,6 +138,10 @@ proc getErrorMsg*(m: Match): string =
     "too many arguments"
   of TooFewArguments:
     "too few arguments"
+  of NameNotFound:
+    "named argument not found"
+  of ParamAlreadyGiven:
+    "parameter already given"
 
 proc addErrorMsg*(dest: var string; m: Match) =
   assert m.err
@@ -225,16 +230,20 @@ proc matchesConstraintAux(m: var Match; f: var Cursor; a: Cursor): bool =
     inc f
     result = true
     while f.kind != ParRi:
-      if not matchesConstraint(m, f, a):
+      var f2 = f
+      if not matchesConstraint(m, f2, a):
         result = false
         break
+      skip f
     skipToEnd f
   of OrT:
     inc f
     while f.kind != ParRi:
-      if matchesConstraint(m, f, a):
+      var f2 = f
+      if matchesConstraint(m, f2, a):
         result = true
         break
+      skip f
     skipToEnd f
   of ConceptT:
     # XXX Use some algorithm here that can cache the result
@@ -244,8 +253,10 @@ proc matchesConstraintAux(m: var Match; f: var Cursor; a: Cursor): bool =
     skip f
   of TypeKindT:
     var aTag = a
-    if a.kind == Symbol:
-      aTag = typeImpl(a.symId)
+    if aTag.typeKind == InvokeT:
+      inc aTag
+    if aTag.kind == Symbol:
+      aTag = typeImpl(aTag.symId)
     if aTag.typeKind == TypeKindT:
       inc aTag
     inc f
@@ -257,7 +268,15 @@ proc matchesConstraintAux(m: var Match; f: var Cursor; a: Cursor): bool =
     assert f.kind == ParRi
     inc f
   of OrdinalT:
-    result = isOrdinalType(a)
+    case a.typeKind
+    of OrdinalT:
+      result = true
+    of TypeKindT:
+      var aTag = a
+      inc aTag
+      result = isOrdinalTypeKind(aTag.typeKind)
+    else:
+      result = isOrdinalType(a)
     skip f
   else:
     result = false
@@ -610,10 +629,20 @@ proc checkIntLitRange(context: ptr SemContext; f: Cursor; intLit: Cursor): bool 
     let i = createXint(pool.integers[intLit.intId])
     result = i >= firstOrd(context[], f) and i <= lastOrd(context[], f)
 
+proc skipExpr*(n: Cursor): Cursor =
+  result = n
+  while result.exprKind in {ExprX, ParX}:
+    inc result
+    var next = result
+    while next.kind != ParRi:
+      result = next
+      skip next
+
 proc matchIntegralType(m: var Match; f: var Cursor; arg: Item) =
   var a = skipModifier(arg.typ)
+  let ex = skipExpr(arg.n)
   let isIntLit = f.typeKind != CharT and
-    arg.n.kind == IntLit and sameTrees(a, m.context.types.intType)
+    ex.kind == IntLit and sameTrees(a, m.context.types.intType)
   let sameKind = f.tag == a.tag
   if sameKind or isIntLit:
     inc a
@@ -625,7 +654,7 @@ proc matchIntegralType(m: var Match; f: var Cursor; arg: Item) =
   let cmp = cmpTypeBits(m.context, f, a)
   if cmp == 0 and sameKind:
     discard "same types"
-  elif cmp > 0 or (isIntLit and checkIntLitRange(m.context, forig, arg.n)):
+  elif cmp > 0 or (isIntLit and checkIntLitRange(m.context, forig, ex)):
     # f has more bits than a, great!
     if m.skippedMod in {MutT, OutT}:
       m.error ImplicitConversionNotMutable, forig, forig
@@ -670,13 +699,6 @@ proc matchArrayType(m: var Match; f: var Cursor; a: var Cursor) =
       m.error InvalidMatch, f, a
   else:
     m.error InvalidMatch, f, a
-
-proc isStringType*(a: Cursor): bool {.inline.} =
-  result = a.kind == Symbol and a.symId == pool.syms.getOrIncl(StringName)
-  #a.typeKind == StringT: StringT now unused!
-
-proc isSomeStringType*(a: Cursor): bool {.inline.} =
-  result = a.typeKind == CstringT or isStringType(a)
 
 proc isSomeSeqType*(a: Cursor, elemType: var Cursor): bool =
   # check that `a` is either an instantiation of seq or an invocation to it
@@ -756,7 +778,7 @@ proc singleArgImpl(m: var Match; f: var Cursor; arg: Item) =
         discard "ok"
         inc f
         expectParRi m, f
-      elif isStringType(a) and arg.n.kind == StringLit:
+      elif isStringType(a) and skipExpr(arg.n).kind == StringLit:
         m.args.addParLe HconvX, m.argInfo
         m.args.addSubtree f
         inc m.opened
@@ -876,6 +898,7 @@ proc addEmptyRangeType(buf: var TokenBuf; c: ptr SemContext; info: PackedLineInf
   buf.addParRi()
 
 proc matchEmptyContainer(m: var Match; f: var Cursor; arg: Item) =
+  # XXX handle empty containers nested inside (expr)
   if (arg.n.exprKind == AconstrX and f.typeKind == ArrayT) or
       (arg.n.exprKind == SetConstrX and f.typeKind == SetT):
     # could also handle case where `f` is a typevar
@@ -944,6 +967,7 @@ proc singleArg(m: var Match; f: var Cursor; arg: Item) =
       dec m.opened
 
 proc typematch*(m: var Match; formal: Cursor; arg: Item) =
+  m.argInfo = arg.n.info
   var f = formal
   singleArg m, f, arg
 
@@ -987,7 +1011,7 @@ proc sigmatchLoop(m: var Match; f: var Cursor; args: openArray[Item]) =
     var ftyp = param.typ
     # This is subtle but only this order of `i >= args.len` checks
     # is correct for all cases (varargs/too few args/too many args)
-    if ftyp != "varargs":
+    if ftyp.tagEnum != VarargsTagId:
       if i >= args.len: break
       skip f
     else:
@@ -995,9 +1019,13 @@ proc sigmatchLoop(m: var Match; f: var Cursor; args: openArray[Item]) =
       if i >= args.len: break
     if args[i].n.kind == DotToken:
       # default parameter
-      assert param.val.kind != DotToken
-      assert not isVarargs
-      m.args.add dotToken(param.val.info)
+      if param.val.kind != DotToken:
+        m.args.add dotToken(param.val.info)
+      else:
+        # can end up here after named param ordering which doesn't check if params have default values
+        # XXX error message should include param name
+        m.error0 TooFewArguments
+        break
     else:
       m.argInfo = args[i].n.info
       singleArg m, ftyp, args[i]
@@ -1073,7 +1101,7 @@ proc sigmatch*(m: var Match; fn: FnCandidate; args: openArray[Item];
   matchTypevars m, fn, explicitTypeVars
 
   var f = fn.typ
-  assert f == "params"
+  assert f.isParamsTag
   inc f # "params"
   sigmatchLoop m, f, args
 
@@ -1168,8 +1196,100 @@ proc cmpMatches*(a, b: Match): DisambiguationResult =
       else:
         result = NobodyWins
 
-# How to implement named parameters: In a preprocessing step
-# The signature is matched against the named parameters. The
-# call is then reordered to `f`'s needs. This keeps the common case fast
-# where no named parameters are used at all.
+type ParamsInfo = object
+  len: int
+  names: Table[StrId, int]
+  isVarargs: seq[bool] # could also use a set or store the decls and check after
 
+proc buildParamsInfo(params: Cursor): ParamsInfo =
+  result = ParamsInfo(names: initTable[StrId, int](), len: 0)
+  var f = params
+  assert f.isParamsTag
+  inc f # "params"
+  while f.kind != ParRi:
+    assert f.symKind == ParamY
+    var param = takeLocal(f, SkipFinalParRi)
+    let isVarargs = param.typ.tagEnum == VarargsTagId
+    result.isVarargs.add isVarargs
+    let name = getIdent(param.name)
+    result.names[name] = result.len
+    inc result.len
+
+proc orderArgs(m: var Match; paramsCursor: Cursor; args: openArray[Item]): seq[Item] =
+  let params = buildParamsInfo(paramsCursor)
+  var positions = newSeq[int](params.len)
+  for i in 0 ..< positions.len: positions[i] = -1
+  var cont: seq[bool] = @[] # could be a set but uses less memory for most common arg counts
+  var inVarargs = false
+  var fi = 0
+  var ai = 0
+  while ai < args.len:
+    # original nim uses this for next positional argument regardless of named arg:
+    let nextFi = fi + 1
+    var n = args[ai].n
+    if n.substructureKind == VvU:
+      inc n
+      let name = getIdent(n)
+      if name in params.names:
+        fi = params.names[name]
+        inVarargs = false
+      else:
+        swap m.pos, ai
+        m.error0 NameNotFound
+        swap m.pos, ai
+        return
+    elif fi >= params.len:
+      swap m.pos, ai
+      m.error0 TooManyArguments
+      swap m.pos, ai
+      return
+
+    if inVarargs:
+      if cont.len == 0:
+        cont = newSeq[bool](args.len)
+      assert ai != 0
+      cont[ai - 1] = true
+    elif positions[fi] < 0:
+      positions[fi] = ai
+    else:
+      swap m.pos, ai
+      m.error0 ParamAlreadyGiven
+      swap m.pos, ai
+      return
+
+    if not params.isVarargs[fi]:
+      fi = nextFi # will be checked on the next arg if it went over
+    else:
+      inVarargs = true
+    inc ai
+
+  result = newSeqOfCap[Item](args.len)
+  fi = 0
+  while fi < params.len:
+    ai = positions[fi]
+    if ai < 0:
+      # does not fail early here for missing default value
+      m.insertedParam = true
+      result.add Item(n: emptyNode(m.context[]), typ: m.context.types.autoType)
+    else:
+      while true:
+        var arg = args[ai]
+        # remove name:
+        if arg.n.substructureKind == VvU:
+          inc arg.n
+          skip arg.n
+        result.add arg
+        if cont.len != 0 and cont[ai]: 
+          inc ai
+          assert ai < args.len
+        else:
+          break
+    inc fi
+
+proc sigmatchNamedArgs*(m: var Match; fn: FnCandidate; args: openArray[Item];
+                        explicitTypeVars: Cursor;
+                        hasNamedArgs: bool) =
+  if hasNamedArgs:
+    sigmatch m, fn, orderArgs(m, fn.typ, args), explicitTypeVars
+  else:
+    sigmatch m, fn, args, explicitTypeVars

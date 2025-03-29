@@ -206,7 +206,7 @@ proc getTypeImpl(c: var TypeCache; n: Cursor; flags: set[GetTypeFlag]): Cursor =
   of AtX, ArrAtX:
     result = getTypeImpl(c, n.firstSon, flags)
     case typeKind(result)
-    of ArrayT:
+    of ArrayT, SetT:
       inc result # to the element type
     of CstringT:
       result = c.builtins.charType
@@ -251,8 +251,7 @@ proc getTypeImpl(c: var TypeCache; n: Cursor; flags: set[GetTypeFlag]): Cursor =
       inc result # dot token
       skip result # parameters
   of FalseX, TrueX, AndX, OrX, XorX, NotX, DefinedX, DeclaredX, IsmainmoduleX, EqX, NeqX, LeX, LtX,
-     EqsetX, LesetX, LtsetX, InsetX,
-     CompilesX:
+     EqsetX, LesetX, LtsetX, InsetX, OvfX, CompilesX:
     result = c.builtins.boolType
   of NegX, NegInfX, NanX, InfX:
     result = c.builtins.floatType
@@ -374,6 +373,7 @@ proc getTypeImpl(c: var TypeCache; n: Cursor; flags: set[GetTypeFlag]): Cursor =
       of "f32": result = c.builtins.float32Type
       of "f64": result = c.builtins.float64Type
       of "R", "T": result = c.builtins.stringType
+      of "C": result = c.builtins.cstringType
       else: result = c.builtins.autoType
 
   assert result.kind != ParRi, "ParRi for expression: " & toString(n, false)

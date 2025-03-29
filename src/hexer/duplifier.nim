@@ -80,6 +80,8 @@ proc isLastRead(c: var Context; n: Cursor): bool =
     if canAnalyse:
       var otherUsage = NoLineInfo
       result = isLastUse(n, c.source[], otherUsage)
+      if c.reportLastUse:
+        echo infoToStr(n.info), " LastUse: ", result
 
 const
   ConstructingExprs = CallKinds + {OconstrX, NewobjX, AconstrX, TupX, NewrefX}
@@ -131,7 +133,7 @@ proc potentialSelfAsgn(dest, src: Cursor): bool =
         # see if we can distinguish between `x.fieldA` and `x.fieldB` which
         # cannot alias. We do know here that at least one expressions is free of
         # pointer derefs, so we can simply use `sameValues` here.
-        result = sameTrees(dest, src)
+        result = sameTreesIgnoreArrayIndexes(dest, src)
       else:
         # different roots while we know that at least one expression has
         # no harmful pointer deref:
@@ -477,7 +479,12 @@ proc trProcDecl(c: var Context; n: var Cursor; parentNodestroy = false) =
   c.dest.add n
   let oldResultSym = c.resultSym
   c.resultSym = NoSymId
+  let oldReportLastUse = c.reportLastUse
   var r = takeRoutine(n, SkipFinalParRi)
+  let symId = r.name.symId
+  if isLocalDecl(symId):
+    c.typeCache.registerLocal(symId, r.kind, r.params)
+  c.reportLastUse = hasPragmaOfValue(r.pragmas, ReportP, "lastuse")
   copyTree c.dest, r.name
   copyTree c.dest, r.exported
   copyTree c.dest, r.pattern
@@ -498,6 +505,7 @@ proc trProcDecl(c: var Context; n: var Cursor; parentNodestroy = false) =
     copyTree c.dest, r.body
   c.dest.addParRi()
   c.resultSym = oldResultSym
+  c.reportLastUse = oldReportLastUse
 
 proc hasDestructor(c: Context; typ: Cursor): bool {.inline.} =
   not isTrivial(c.lifter[], typ)
@@ -606,7 +614,7 @@ proc trNewobj(c: var Context; n: var Cursor; e: Expects; kind: ExprKind) =
 
   let baseType = refType.firstSon
   var refTypeCopy = refType
-  let typeKey = takeMangle refTypeCopy
+  let typeKey = takeMangle(refTypeCopy, c.lifter.bits)
   let typeSym = pool.syms.getOrIncl(typeKey & GeneratedTypeSuffix)
 
   copyIntoKind c.dest, CastX, info:
@@ -783,9 +791,21 @@ proc trDeref(c: var Context; n: var Cursor) =
     c.dest.addIntLit(0, info) # inheritance
   takeParRi c.dest, n
 
+proc trTypeDecl(c: var Context; n: var Cursor) =
+  var iter = n
+  inc iter
+  let symId = iter.symId
+  var dest = createTokenBuf()
+  takeTree(dest, n)
+  c.dest.add dest
+  if isLocalDecl(symId):
+    publish(symId, dest)
+
 proc tr(c: var Context; n: var Cursor; e: Expects) =
   if n.kind == Symbol:
     trLocation c, n, e
+  elif n.stmtKind == TypeS:
+    trTypeDecl c, n
   elif n.kind in {Ident, SymbolDef, IntLit, UIntLit, CharLit, StringLit, FloatLit, DotToken} or isDeclarative(n):
     takeTree c.dest, n
   else:
@@ -828,7 +848,7 @@ proc tr(c: var Context; n: var Cursor; e: Expects) =
        PlusSetX, MinusSetX, MulSetX, XorSetX, EqSetX, LeSetX, LtSetX, InSetX, CardX,
        EqX, NeqX, LeX, LtX, InfX, NegInfX, NanX, CompilesX, DeclaredX,
        DefinedX, HighX, LowX, TypeofX, UnpackX, EnumtostrX, IsmainmoduleX, QuotedX,
-       AddrX, HaddrX, AlignofX, OffsetofX, ErrX:
+       AddrX, HaddrX, AlignofX, OffsetofX, ErrX, OvfX:
       trSons c, n, WantNonOwner
     of DerefX, HderefX:
       trDeref c, n

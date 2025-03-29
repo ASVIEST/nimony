@@ -10,7 +10,7 @@ const
   LenShift = 1
   IsAllocatedBit = 1
 
-proc len*(s: string): int {.inline, ensures: (0 <= result).} =
+proc len*(s: string): int {.inline, semantics: "string.len", ensures: (0 <= result).} =
   result = s.i shr LenShift
 
 proc high*(s: string): int {.inline.} = len(s)-1
@@ -134,6 +134,8 @@ proc growImpl(s: var string; newLen: int) =
     else:
       oomHandler newCap
       s.i = EmptyI
+  else:
+    s.i = (newLen shl LenShift) or (s.i and IsAllocatedBit)
 
 proc makeAllocated(s: var string; newLen: int) =
   let len = s.len
@@ -210,7 +212,8 @@ proc substr*(s: string; first, last: int): string =
 proc substr*(s: string; first = 0): string =
   result = substr(s, first, high(s))
 
-proc `==`*(a, b: string): bool {.exportc: "nimStrEq", inline.} =
+# used by string case:
+proc equalStrings(a, b: string): bool {.exportc: "nimStrEq", inline.} =
   if a.len == b.len:
     if a.len > 0:
       result = cmpMem(a.a, b.a, a.len) == 0
@@ -218,6 +221,9 @@ proc `==`*(a, b: string): bool {.exportc: "nimStrEq", inline.} =
       result = true
   else:
     result = false
+
+proc `==`*(a, b: string): bool {.inline, semantics: "string.==".} =
+  result = equalStrings(a, b)
 
 proc nimStrAtLe(s: string; idx: int; ch: char): bool {.exportc: "nimStrAtLe", inline.} =
   result = idx < s.len and s[idx] <= ch
@@ -265,7 +271,7 @@ template concat*(): string {.varargs.} =
     res.add s
   res
 
-proc `&`*(a, b: string): string =
+proc `&`*(a, b: string): string {.semantics: "string.&".} =
   let rlen = a.len + b.len
   let r = cast[StrData](alloc(rlen))
   if r != nil:

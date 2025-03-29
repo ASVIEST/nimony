@@ -80,7 +80,7 @@ proc processInclude(c: var DepContext; it: var Cursor; current: Node) =
   inc x # skip the `include`
   while x.kind != ParRi:
     var hasError = false
-    filenameVal(x, files, hasError)
+    filenameVal(x, files, hasError, allowAs = false)
 
     if hasError:
       discard "ignore wrong `include` statement"
@@ -137,7 +137,7 @@ proc processImport(c: var DepContext; it: var Cursor; current: Node) =
   skip it
   inc x # skip the `import`
   while x.kind != ParRi:
-    if x.kind == ParLe and x == "pragmax":
+    if x.kind == ParLe and x.exprKind == PragmaxX:
       inc x
       var y = x
       skip y
@@ -148,21 +148,22 @@ proc processImport(c: var DepContext; it: var Cursor; current: Node) =
 
     var files: seq[ImportedFilename] = @[]
     var hasError = false
-    filenameVal(x, files, hasError)
+    filenameVal(x, files, hasError, allowAs = true)
     if hasError:
       discard "ignore wrong `import` statement"
     else:
       for f in files:
         importSingleFile c, f.path, info, current, false
 
-proc processFrom(c: var DepContext; it: var Cursor; current: Node) =
+proc processSingleImport(c: var DepContext; it: var Cursor; current: Node) =
+  # process `from import` and `import except` which have a single module expression
   let info = it.info
   var x = it
   skip it
-  inc x # skip the `from`
+  inc x # skip the tag
   var files: seq[ImportedFilename] = @[]
   var hasError = false
-  filenameVal(x, files, hasError)
+  filenameVal(x, files, hasError, allowAs = true)
   if hasError:
     discard "ignore wrong `from` statement"
   else:
@@ -174,10 +175,10 @@ proc processDep(c: var DepContext; n: var Cursor; current: Node) =
   case stmtKind(n)
   of ImportS:
     processImport c, n, current
-  of IncludeS, ImportExceptS:
+  of IncludeS:
     processInclude c, n, current
-  of FromimportS:
-    processFrom c, n, current
+  of FromimportS, ImportexceptS:
+    processSingleImport c, n, current
   of ExportS:
     discard "ignore `export` statement"
     skip n
@@ -329,6 +330,7 @@ proc generateFrontendMakefile(c: DepContext; commandLineArgs: string): string =
 
   # every semchecked .nif file depends on all of its parsed.nif file
   # plus on the indexes of its imports:
+  var i = 0
   for v in c.nodes:
     s.add "\n" & mescape(c.config.indexFile(v.files[0])) & " " & mescape(c.config.semmedFile(v.files[0])) & ":"
     var seenDeps = initHashSet[string]()
@@ -340,10 +342,11 @@ proc generateFrontendMakefile(c: DepContext; commandLineArgs: string): string =
       let idxFile = c.config.indexFile(f)
       if not seenDeps.containsOrIncl(idxFile):
         s.add "  " & mescape(idxFile)
-    s.add " " & c.config.cachedConfigFile()
-    let args = commandLineArgs & (if v.isSystem: " --isSystem" else: "")
+    s.add " " & mescape(c.config.cachedConfigFile())
+    let args = commandLineArgs & (if v.isSystem: " --isSystem" else: "") & (if i == 0: " --isMain" else: "")
     s.add "\n\t" & mescape(c.nimsem) & " " & args & " m " & mescape(c.config.parsedFile(v.files[0])) & " " &
       mescape(c.config.semmedFile(v.files[0])) & " " & mescape(c.config.indexFile(v.files[0]))
+    inc i
 
   # every parsed.nif file is produced by a .nim file by the nifler tool:
   var seenFiles = initHashSet[string]()
@@ -359,9 +362,11 @@ proc generateFrontendMakefile(c: DepContext; commandLineArgs: string): string =
   result = c.config.nifcachePath / c.rootNode.files[0].modname & ".makefile"
   writeFile result, s
 
-proc generateCachedConfigFile(c: DepContext) =
+proc generateCachedConfigFile(c: DepContext; passC, passL: string) =
   let path = c.config.cachedConfigFile()
-  let configStr = c.config.getOptionsAsOneString() & " " & c.rootNode.files[0].nimFile
+  let configStr = c.config.getOptionsAsOneString() & " " & c.rootNode.files[0].nimFile &
+                  " --passC:" & passC & " --passL:" & passL
+
   let needUpdate = if semos.fileExists(path) and not c.forceRebuild:
                      configStr != readFile path
                    else:
@@ -388,7 +393,7 @@ proc buildGraph*(config: sink NifConfig; project: string; forceRebuild, silentMa
   c.nodes.add c.rootNode
   c.processedModules.incl p.modname
   parseDeps c, p, c.rootNode
-  generateCachedConfigFile c
+  generateCachedConfigFile c, passC, passL
   let makeFilename = generateFrontendMakefile(c, commandLineArgs)
   #echo "run with: make -f ", makeFilename
   when defined(windows):

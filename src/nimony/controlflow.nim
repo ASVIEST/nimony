@@ -56,7 +56,11 @@ proc codeListing*(c: TokenBuf, start = 0; last = -1): string =
     case c[i].kind
     of GotoInstr:
       b.addTree "goto"
-      b.addIdent "L" & $(i+c[i].getInt28())
+      let diff = c[i].getInt28()
+      if diff != 0:
+        b.addIdent "L" & $(i+diff)
+      else:
+        b.addIdent "L<BUG HERE>" & $i
       b.endTree()
     of Symbol:
       b.addSymbol pool.syms[c[i].symId]
@@ -80,7 +84,9 @@ proc codeListing*(c: TokenBuf, start = 0; last = -1): string =
 proc genLabel(c: ControlFlow): Label = Label(c.dest.len)
 
 proc jmpBack(c: var ControlFlow, p: Label; info: PackedLineInfo) =
-  c.dest.add int28Token(p.int32 - c.dest.len.int32, info)
+  let diff = p.int - c.dest.len
+  assert diff < 0
+  c.dest.add int28Token(diff.int32, info)
 
 proc jmpForw(c: var ControlFlow; info: PackedLineInfo): Label =
   result = Label(c.dest.len)
@@ -88,7 +94,10 @@ proc jmpForw(c: var ControlFlow; info: PackedLineInfo): Label =
 
 proc patch(c: var ControlFlow; p: Label) =
   # patch with current index
-  c.dest[p.int].patchInt28Token int32(c.dest.len - p.int)
+  let diff = c.dest.len - p.int
+  assert diff != 0
+  assert c.dest[p.int].kind == GotoInstr
+  c.dest[p.int].patchInt28Token int32(diff)
 
 proc trExpr(c: var ControlFlow; n: var Cursor)
 proc trStmt(c: var ControlFlow; n: var Cursor)
@@ -98,6 +107,7 @@ type
 
 proc trStmtOrExpr(c: var ControlFlow; n: var Cursor; tar: Target) =
   if tar != SymId(0):
+    c.stmtBegin = c.dest.len
     c.dest.addParLe(AsgnS, n.info)
     c.dest.addSymUse tar, n.info
     trExpr c, n
@@ -186,9 +196,13 @@ proc declareBool(c: var ControlFlow; info: PackedLineInfo): TempVar =
 
 proc rollbackToStmtBegin(c: var ControlFlow): TokenBuf =
   result = createTokenBuf(40)
+  assert c.stmtBegin >= 0
   for i in c.stmtBegin ..< c.dest.len:
+    if c.dest[i].kind == GotoInstr and c.dest[i].getInt28() == 0:
+      assert false, "goto instruction in an expression?"
     result.add c.dest[i]
   c.dest.shrink c.stmtBegin
+  c.stmtBegin = -1 # mark as used up
 
 proc trStandaloneAndOr(c: var ControlFlow; n: var Cursor; opc: ExprKind) =
   assert opc == AndX or opc == OrX
@@ -223,6 +237,7 @@ proc trStandaloneAndOr(c: var ControlFlow; n: var Cursor; opc: ExprKind) =
   for i in 0 ..< fullExpr.len:
     c.dest.add fullExpr[i]
   c.useTemp temp, info
+  c.stmtBegin = c.dest.len
 
 proc trWhile(c: var ControlFlow; n: var Cursor) =
   let info = n.info
@@ -299,6 +314,7 @@ proc trIf(c: var ControlFlow; n: var Cursor; tar: Target) =
     elif k == ElseU:
       inc n
       trStmtOrExpr c, n, tar
+      endings.add c.jmpForw(info) # this is crucial if we use the graph to compute basic blocks
       skipParRi n
     else:
       break
@@ -592,6 +608,7 @@ proc trCase(c: var ControlFlow; n: var Cursor; tar: Target) =
   if n.substructureKind == ElseU:
     inc n
     trStmtOrExpr c, n, tar
+    endings.add c.jmpForw(n.info) # this is crucial if we use the graph to compute basic blocks
     skipParRi n
   skipParRi n
   for e in endings: c.patch e
@@ -657,7 +674,7 @@ proc trStmt(c: var ControlFlow; n: var Cursor) =
     skip n
   of CallS, CmdS:
     trCall c, n
-  of YldS, DiscardS, InclS, ExclS, AsmS, DeferS:
+  of YldS, DiscardS, InclS, ExclS, AsmS, DeferS, AssumeS, AssertS:
     c.dest.add n
     inc n
     while n.kind != ParRi:
@@ -667,10 +684,11 @@ proc trStmt(c: var ControlFlow; n: var Cursor) =
   of WhenS:
     raiseAssert "`when` statement should have been eliminated"
 
-proc openTempVar(c: var ControlFlow; typ: Cursor; info: PackedLineInfo): SymId =
+proc openTempVar(c: var ControlFlow; kind: StmtKind; typ: Cursor; info: PackedLineInfo): SymId =
+  assert typ.kind != DotToken
   result = pool.syms.getOrIncl("`cf" & $c.nextVar)
   inc c.nextVar
-  c.dest.addParLe LetS, info
+  c.dest.addParLe kind, info
   c.dest.addSymDef result, info
   c.dest.addEmpty2 info # no export marker, no pragmas
   c.dest.copyTree typ
@@ -690,13 +708,15 @@ proc trStmtListExpr(c: var ControlFlow; n: var Cursor) =
     when defined(debug):
       writeStackTrace()
     quit "trStmtListExpr: type is nil"
-  let temp = openTempVar(c, typ, NoLineInfo)
+  c.stmtBegin = c.dest.len
+  let temp = openTempVar(c, LetS, typ, NoLineInfo)
   trExpr c, n
   c.dest.addParRi() # close temp var declaration
   skipParRi n
   for i in 0 ..< fullExpr.len:
     c.dest.add fullExpr[i]
   c.dest.addSymUse temp, info
+  c.stmtBegin = c.dest.len
 
 type
   ControlFlowAsExprKind = enum
@@ -708,9 +728,10 @@ proc trIfCaseTryBlockExpr(c: var ControlFlow; n: var Cursor; kind: ControlFlowAs
 
   let fullExpr = rollbackToStmtBegin c
 
-  let tar = openTempVar(c, typ, NoLineInfo)
+  let tar = openTempVar(c, VarS, typ, NoLineInfo)
   c.dest.addDotToken()
   c.dest.addParRi() # close temp var declaration
+  c.stmtBegin = c.dest.len
 
   case kind
   of IfExpr:
@@ -725,6 +746,7 @@ proc trIfCaseTryBlockExpr(c: var ControlFlow; n: var Cursor; kind: ControlFlowAs
   for i in 0 ..< fullExpr.len:
     c.dest.add fullExpr[i]
   c.dest.addSymUse tar, info
+  c.stmtBegin = c.dest.len
 
 proc trExprLoop(c: var ControlFlow; n: var Cursor) =
   c.dest.add n
@@ -765,7 +787,8 @@ proc trExpr(c: var ControlFlow; n: var Cursor) =
        UnpackX, EnumToStrX, XorX,
        IsMainModuleX, DefaultObjX, DefaultTupX, PlusSetX, MinusSetX,
        MulSetX, XorSetX, EqSetX, LeSetX, LtSetX, InSetX, CardX, EmoveX,
-       DestroyX, DupX, CopyX, WasMovedX, SinkhX, TraceX, BracketX, CurlyX, TupX:
+       DestroyX, DupX, CopyX, WasMovedX, SinkhX, TraceX,
+       BracketX, CurlyX, TupX, OvfX:
       trExprLoop c, n
     of CompilesX, DeclaredX, DefinedX, HighX, LowX, TypeofX, SizeofX, AlignofX, OffsetofX:
       # we want to avoid false dependencies for `sizeof(var)` as it doesn't really "use" the variable:
@@ -788,89 +811,54 @@ proc trExpr(c: var ControlFlow; n: var Cursor) =
 
 proc toControlflow*(n: Cursor): TokenBuf =
   var c = ControlFlow(typeCache: createTypeCache())
-  assert n.stmtKind == StmtsS
   c.typeCache.openScope()
+  let sk = n.stmtKind
   var n = n
-  c.dest.add n
-  inc n
-  while n.kind != ParRi:
-    trStmt c, n
-  c.dest.addParPair RetS, NoLineInfo
-  c.dest.addParRi()
+  if sk in {ProcS, FuncS, IteratorS, ConverterS, MethodS, MacroS}:
+    trProc c, n
+  else:
+    assert sk == StmtsS
+    c.dest.add n
+    inc n
+    while n.kind != ParRi:
+      trStmt c, n
+    c.dest.addParPair RetS, NoLineInfo
+    c.dest.addParRi()
   c.typeCache.closeScope()
   result = ensureMove c.dest
   #echo "result: ", codeListing(result)
 
+const
+  PayloadOffset* = 1'u32 # so that we don't use 0 as a payload
+
+proc prepare*(buf: var TokenBuf): seq[PackedLineInfo] =
+  result = newSeq[PackedLineInfo](buf.len)
+  for i in 0..<buf.len:
+    result[i] = buf[i].info
+    buf[i].info = toPayload(i.uint32 + PayloadOffset)
+
+proc restore*(buf: var TokenBuf; infos: seq[PackedLineInfo]) =
+  for i in 0..<buf.len:
+    buf[i].info = infos[i]
+
+proc isMarked*(n: Cursor): bool {.inline.} =
+  result = n.info == toPayload(0'u32)
+
+proc doMark*(n: Cursor) {.inline.} =
+  n.setInfo(toPayload(0'u32))
+
+proc testOrSetMark*(n: Cursor): bool {.inline.} =
+  if isMarked(n):
+    result = true
+  else:
+    doMark(n)
+    result = false
+
 when isMainModule:
-  proc test(s: string) =
-    var input = parse(s)
+  import std / [syncio, os]
+  proc main(infile, outputfile: string) =
+    var input = parse(readFile(infile))
     var cf = toControlflow(beginRead(input))
-    echo codeListing(cf)
+    writeFile(outputfile, codeListing(cf))
 
-  const BasicTest = """(stmts
-(if (elif (eq +11 +11) (call echo "true")))
-
-(if
-  (elif (eq +12 +12) (call echo "true"))
-  (elif (and (eq +2 +3) (eq +4 +5)) (call echo "elif"))
-  (else (call echo "false"))
-)
-
-(while (eq +13 +13) (call echo "while"))
-
-(while (or (eq +9 +9) (eq +4 +5)) (call echo "while 2"))
-
-(let :my.var . . (i -1) (call echo.0 "abc" (and (eq +5 -5) (eq +6 -6))))
-)
-
-"""
-  const NotTest = """(stmts
-  (if (elif (not (eq +1 +1)) (call echo "true")))
-  (call echo (expr (stmts (call side.effect)) +3))
-)
-"""
-  const ReturnTest = """(stmts
-  (proc :my.proc . . . (params (param :i.0 .. (i -1) .))
-    (i -1) . . (stmts (result :res.0 . . (i -1) .) (ret +1)))
-  (call my.proc +3))
-  """
-
-  const TryTest =  """(stmts
-  (try
-    (stmts (call echo "try") (raise some.exc))
-    (except (as :e.0 Type)
-      (stmts (call echo "except")))
-    (fin
-      (stmts (call echo "finally"))
-    )
-  ))
-  """
-
-  const CaseTest = """(stmts
-    (let :other.var . . (i -1) +12)
-    (let :my.var . . (i -1)
-      (case other.var
-        (of (set +0 +1 +2 (range +5 +15) +80) +1)
-        (else +0)
-    )
-    )
-  )"""
-
-  const AsgnTest = """(stmts
-  (proc :my.proc . . . (params (param :i.0 .. (i -1) .))
-    (i -1) . . (stmts (result :res.0 . . (i -1) .) (ret +1)))
-
-  (let :my.var . . (array (i +8) +6) .)
-  (var :i.0 . . (i -1) +0)
-  (asgn (arrat my.var i.0) +56)
-
-  (asgn i.0 +1)
-  )
-  """
-
-  #test BasicTest
-  #test NotTest
-  #test ReturnTest
-  #test TryTest
-  #test CaseTest
-  test AsgnTest
+  main(paramStr(1), paramStr(2))

@@ -177,7 +177,7 @@ proc compareValgrindOutput(s1: string, s2: string): bool =
   let s2 = s2.splitLines()
   if s1.len != s2.len:
     return false
-  for i in 0 .. s1.len - 1:
+  for i in 3 .. s1.len - 1:
     let n1 = rfind(s1[i], "== ")
     let n2 = rfind(s2[i], "== ")
     if n2 == -1 or s1[i][n1+3..^1] != s2[i][n2+3..^1]:
@@ -306,6 +306,45 @@ proc nimonytests(overwrite: bool) =
   else:
     echo "SUCCESS."
 
+proc controlflowTests(tool: string; overwrite: bool) =
+  ## Run all the controlflow tests in the test-suite.
+  let testDir = "tests/" & tool
+  let t0 = epochTime()
+  var c = TestCounters(total: 0, failures: 0)
+  for x in walkDir(testDir, relative = true):
+    if x.kind == pcFile and x.path.endsWith(".nif") and not x.path.contains(".expected.nif"):
+      inc c.total
+      let t = testDir / x.path
+      let dest = t.changeFileExt(".out.nif")
+      let (msgs, exitcode) = execLocal(tool, os.quoteShell(t) & " " & os.quoteShell(dest))
+      if exitcode != 0:
+        failure c, t, tool & " exitcode " & $exitcode, msgs
+      let msgsFile = t.changeFileExt(".msgs")
+      if msgsFile.fileExists():
+        if overwrite:
+          writeFile(msgsFile, msgs)
+        else:
+          let expectedOutput = readFile(msgsFile).strip
+          if expectedOutput != msgs.strip:
+            failure c, t, expectedOutput, msgs
+      let expected = t.changeFileExt(".expected.nif")
+      if overwrite:
+        if expected.fileExists():
+          moveFile(dest, expected)
+      elif expected.fileExists():
+        let expectedOutput = readFile(expected).strip
+        let destContent = readFile(dest).strip
+        let success = expectedOutput == destContent
+        if success:
+          os.removeFile(dest)
+        else:
+          failure c, t, expectedOutput, destContent
+  echo c.total - c.failures, " / ", c.total, " tests successful in ", formatFloat(epochTime() - t0, precision=2), "s."
+  if c.failures > 0:
+    quit "FAILURE: Some tests failed."
+  else:
+    echo "SUCCESS."
+
 proc test(t: string; overwrite: bool; cat: Category) =
   var c = TestCounters(total: 0, failures: 0)
   testFile c, t, overwrite, cat
@@ -398,6 +437,16 @@ proc buildNimony(showProgress = false) =
   let exe = "nimony".addFileExt(ExeExt)
   robustMoveFile "src/nimony/" & exe, binDir() / exe
 
+proc buildControlflow(showProgress = false) =
+  exec "nim c src/nimony/controlflow.nim", showProgress
+  let exe = "controlflow".addFileExt(ExeExt)
+  robustMoveFile "src/nimony/" & exe, binDir() / exe
+
+proc buildContracts(showProgress = false) =
+  exec "nim c src/nimony/contracts.nim", showProgress
+  let exe = "contracts".addFileExt(ExeExt)
+  robustMoveFile "src/nimony/" & exe, binDir() / exe
+
 proc buildNifc(showProgress = false) =
   exec "nim c src/nifc/nifc.nim", showProgress
   let exe = "nifc".addFileExt(ExeExt)
@@ -452,9 +501,17 @@ proc syncCmd(newBranch: string) =
     quit "FAILURE: " & output
   exec "git checkout master"
   exec "git pull origin master"
-  exec "git branch -D " & output.strip()
+  let branch = output.strip()
+  if branch != "master":
+    exec "git branch -D " & branch
   if newBranch.len > 0:
     exec "git checkout -B " & newBranch
+
+proc pullpush(cmd: string) =
+  let (output, status) = execCmdEx("git symbolic-ref --short HEAD")
+  if status != 0:
+    quit "FAILURE: " & output
+  exec "git " & cmd & " origin " & output.strip()
 
 proc handleCmdLine =
   var primaryCmd = ""
@@ -498,6 +555,18 @@ proc handleCmdLine =
     nimonytests(overwrite)
     nifctests(overwrite)
     #hexertests(overwrite)
+    buildControlflow()
+    controlflowTests("controlflow", overwrite)
+    buildContracts()
+    controlflowTests("contracts", overwrite)
+
+  of "controlflow", "cf":
+    buildControlflow()
+    controlflowTests("controlflow", overwrite)
+
+  of "contracts":
+    buildContracts()
+    controlflowTests("contracts", overwrite)
 
   of "build":
     const showProgress = true
@@ -555,6 +624,10 @@ proc handleCmdLine =
     removeDir "bin"
   of "sync":
     syncCmd(if args.len > 0: args[0] else: "")
+  of "pull":
+    pullpush("pull")
+  of "push":
+    pullpush("push")
   else:
     quit "invalid command: " & primaryCmd
 

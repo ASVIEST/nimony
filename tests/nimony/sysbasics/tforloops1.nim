@@ -81,3 +81,17 @@ for i in 0..<3:
       echo "left the loop!"
       break
     echo "A i ", i, " j ", j
+
+block:
+  for i in 1 ..< 3:
+    for j in 2 ..< 4:
+      let a = i + j
+      var sum: int = 0
+      for k in 1 ..< j:
+        sum = sum + a
+      echo sum
+
+block:
+  let i_arr = [-100, -50, 0, 0, 123, 1000]
+  for i in items(i_arr):
+    echo i
