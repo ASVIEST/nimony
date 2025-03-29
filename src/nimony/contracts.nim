@@ -18,7 +18,7 @@ another code transformation.
 
 ]##
 
-import std / [assertions, tables]
+import std / [assertions, tables, intsets]
 
 include nifprelude
 
@@ -32,7 +32,8 @@ type
     indegree, touched: int
     indegreeFacts: Facts
   Context = object
-    cf, dest: TokenBuf
+    cf, dest, toplevelStmts: TokenBuf
+    routines: seq[Cursor]
     typeCache: TypeCache
     facts: Facts
     writesTo: seq[SymId]
@@ -123,9 +124,11 @@ proc compileCmp(c: var Context; paramMap: Table[SymId, int]; req, call: Cursor):
     b = mapSymbol(c, paramMap, call, r.symId)
     inc r
   elif r.kind == IntLit:
+    b = VarId(0)
     cnst = createXint(pool.integers[r.intId])
     inc r
   elif r.kind == UIntLit:
+    b = VarId(0)
     cnst = createXint(pool.uintegers[r.uintId])
     inc r
   elif (let op = r.exprKind; op in {AddX, SubX}):
@@ -260,15 +263,79 @@ proc `<`*(a, b: BasicBlockIdx): bool {.borrow.}
 proc toBasicBlock*(c: Context; pc: Cursor): BasicBlockIdx {.inline.} =
   result = BasicBlockIdx(cursorToPosition(c.startInstr, pc))
 
+proc eliminateDeadInstructions*(c: TokenBuf; start = 0; last = -1): seq[bool] =
+  # Create a sequence to track which instructions are reachable
+  result = newSeq[bool](if last < 0: c.len else: last + 1)
+  let last = if last < 0: c.len-1 else: min(last, c.len-1)
+
+  # Initialize with the start position
+  var worklist = @[start]
+  var processed = initIntSet()
+
+  # Process the worklist
+  while worklist.len > 0:
+    let pos = worklist.pop()
+    if pos > last or pos in processed:
+      continue
+
+    processed.incl(pos)
+    result[pos] = true  # Mark as reachable
+
+    # Handle different instruction types
+    if c[pos].kind == GotoInstr:
+      let diff = c[pos].getInt28
+      if diff != 0:
+        worklist.add(pos + diff)  # Add the target of the jump
+        # For forward jumps, everything between the goto and its target is potentially unreachable
+        if diff > 0:
+          # Don't automatically continue to the next instruction after a goto
+          continue
+    elif cast[TagEnum](c[pos].tag) == IteTagId:
+      # For if-then-else, process the condition and both branches
+      var p = pos + 1
+      # Skip the condition, marking it as reachable
+      while p <= last and c[p].kind != GotoInstr:
+        result[p] = true
+        inc p
+
+      if p <= last and c[p].kind == GotoInstr:
+        # Process the then branch target
+        let thenDiff = c[p].getInt28
+        result[p] = true  # Mark the goto as reachable
+        worklist.add(p + thenDiff)
+
+        # Move to the else branch
+        inc p
+        if p <= last and c[p].kind == GotoInstr:
+          # Process the else branch target
+          let elseDiff = c[p].getInt28
+          result[p] = true  # Mark the goto as reachable
+          worklist.add(p + elseDiff)
+
+          # Don't automatically continue to the next instruction after ITE
+          continue
+
+    # For regular instructions or after processing special instructions,
+    # continue to the next instruction
+    worklist.add(pos + 1)
+
 proc computeBasicBlocks*(c: TokenBuf; start = 0; last = -1): Table[BasicBlockIdx, BasicBlock] =
   result = initTable[BasicBlockIdx, BasicBlock]()
   let last = if last < 0: c.len-1 else: min(last, c.len-1)
   result[BasicBlockIdx(start)] = BasicBlock(indegree: 0, indegreeFacts: createFacts())
+
+  # First, eliminate dead code
+  let reachable = eliminateDeadInstructions(c, start, last)
+
+  # Now compute basic blocks considering only reachable instructions
   for i in start..last:
+    if not reachable[i]:
+      continue  # Skip unreachable instructions
+
     if c[i].kind == GotoInstr:
       let diff = c[i].getInt28
-      # we ignore backward jumps for now:
-      if diff > 0:
+      # Consider only forward jumps that lead to reachable instructions
+      if diff > 0 and i+diff <= last and reachable[i+diff]:
         let idx = BasicBlockIdx(i+diff)
         result.mgetOrPut(idx, BasicBlock(indegree: 0, indegreeFacts: createFacts())).indegree += 1
 
@@ -300,10 +367,12 @@ proc rightHandSide(c: var Context; pc: var Cursor; fact: var LeXplusC): bool =
     result = true
     inc pc
   elif pc.kind == IntLit:
+    fact.b = VarId(0)
     fact.c = fact.c + createXint(pool.integers[pc.intId])
     result = true
     inc pc
   elif pc.kind == UIntLit:
+    fact.b = VarId(0)
     fact.c = fact.c + createXint(pool.uintegers[pc.uintId])
     result = true
     inc pc
@@ -412,12 +481,12 @@ proc analyseAssume(c: var Context; pc: var Cursor) =
   skipParRi pc
 
 proc analyseAssert(c: var Context; pc: var Cursor) =
-  # We also support `(assert (out) (error) <condition>)` for testing purposes.
+  # We also support `(assert (report) (error) <condition>)` for testing purposes.
   let orig = pc
   inc pc
   var report = false
   var shouldError = false
-  if pc.typeKind == OutT:
+  if pc.pragmaKind == ReportP:
     report = true
     inc pc
     skipParRi pc
@@ -431,7 +500,9 @@ proc analyseAssert(c: var Context; pc: var Cursor) =
   if not fact.isValid:
     error "invalid assert: ", orig
   elif implies(c.facts, fact):
-    if wasEquality:
+    if shouldError:
+      contractViolation(c, orig, fact, report)
+    elif wasEquality:
       if implies(c.facts, fact.geXplusC):
         if report: echo "OK ", fact
       else:
@@ -449,7 +520,7 @@ proc analyseAssert(c: var Context; pc: var Cursor) =
   skipParRi pc
 
 proc traverseBasicBlock(c: var Context; pc: Cursor): Continuation =
-  #echo "TRAVERSING BASIC BLOCK"
+  #echo "TRAVERSING BASIC BLOCK: L", toBasicBlock(c, pc).int
   var nested = 0
   var pc = pc
   while true:
@@ -537,14 +608,18 @@ proc decAndTest(x: var int): bool {.inline.} =
   result = x == 0
 
 proc takeFacts(c: var Context; bb: var BasicBlock; conditionalFacts: int; negate: bool) =
-  let start = bb.indegreeFacts.len
+  #let start = bb.indegreeFacts.len
   if bb.touched == 0:
     for i in 1 ..< c.facts.len - conditionalFacts:
       bb.indegreeFacts.add c.facts[i]
-    for i in c.facts.len - conditionalFacts ..< c.facts.len:
-      var f = c.facts[i]
-      if negate: negateFact(f)
-      bb.indegreeFacts.add f
+    if negate and conditionalFacts > 1:
+      # negation of (a and b) would be (not a or not b) so we cannot model that:
+      discard "must lose information here"
+    else:
+      for i in c.facts.len - conditionalFacts ..< c.facts.len:
+        var f = c.facts[i]
+        if negate: negateFact(f)
+        bb.indegreeFacts.add f
   else:
     # merge the facts:
     bb.indegreeFacts = merge(c.facts, c.facts.len - conditionalFacts, bb.indegreeFacts, negate)
@@ -557,10 +632,20 @@ proc pushFacts(c: var Context; bb: var BasicBlock) =
   for i in 0 ..< bb.indegreeFacts.len:
     c.facts.add bb.indegreeFacts[i]
 
-proc checkContracts(c: var Context) =
-  var bbs = computeBasicBlocks(c.cf)
+proc checkContracts(c: var Context; n: Cursor) =
+  c.cf = toControlflow(n)
+  c.facts = createFacts()
+  freeze c.cf
+  #echo "CF IS ", codeListing(c.cf)
+
   c.startInstr = readonlyCursorAt(c.cf, 0)
-  var current = BasicBlockIdx(0)
+  var body = c.startInstr
+  if body.stmtKind in {ProcS, FuncS, IteratorS, ConverterS, MethodS, MacroS}:
+    inc body
+    for i in 0 ..< BodyPos: skip body
+
+  var current = BasicBlockIdx(cursorToPosition(c.cf, body))
+  var bbs = computeBasicBlocks(c.cf, current.int)
   var nextIter = true
   var candidates = newSeq[BasicBlockIdx]()
   while nextIter or candidates.len > 0:
@@ -588,17 +673,68 @@ proc checkContracts(c: var Context) =
         else:
           candidates.add cont.elsePart
 
+proc traverseProc(c: var Context; n: var Cursor) =
+  let orig = n
+  let r = takeRoutine(n, SkipExclBody)
+  skip n # effects
+  if not isGeneric(r):
+    c.routines.add orig
+    var nested = 0
+    while true:
+      # don't forget about inner procs:
+      let sk = n.stmtKind
+      if sk in {ProcS, FuncS, IteratorS, ConverterS, MethodS}:
+        traverseProc(c, n)
+      elif sk in {MacroS, TemplateS, TypeS, CommentS, PragmasS}:
+        skip n
+      elif n.kind == ParLe:
+        inc nested
+        inc n
+      elif n.kind == ParRi:
+        dec nested
+        inc n
+        if nested == 0: break
+      else:
+        inc n
+    skipParRi n
+  else:
+    skip n # body
+    skipParRi n
+
+proc traverseToplevel(c: var Context; n: var Cursor) =
+  case n.stmtKind
+  of StmtsS:
+    c.toplevelStmts.add n
+    inc n
+    while n.kind != ParRi:
+      traverseToplevel(c, n)
+    c.toplevelStmts.add n
+    skipParRi n
+  of ProcS, FuncS, IteratorS, ConverterS, MethodS:
+    traverseProc(c, n)
+  of MacroS, TemplateS, TypeS, CommentS, PragmasS,
+     ImportasS, ExportexceptS, BindS, MixinS, UsingS,
+     ExportS,
+     IncludeS, ImportS, FromimportS, ImportExceptS:
+    skip n
+  of IfS, WhenS, WhileS, ForS, CaseS, TryS, YldS, RaiseS,
+     UnpackDeclS, StaticstmtS, AsmS, DeferS,
+     CallS, CmdS, GvarS, TvarS, VarS, ConstS, ResultS,
+     GletS, TletS, LetS, CursorS, BlockS, EmitS, AsgnS, ScopeS,
+     BreakS, ContinueS, RetS, InclS, ExclS, DiscardS, AssumeS, AssertS, NoStmt:
+    c.toplevelStmts.takeTree n
+
 proc analyzeContracts*(input: var TokenBuf): TokenBuf =
   let oldInfos = prepare(input)
   var c = Context(typeCache: createTypeCache(),
-    dest: createTokenBuf(500),
-    cf: toControlflow(beginRead input),
-    facts: createFacts())
-  freeze c.cf
-  #echo "CF IS ", codeListing(c.cf)
+    dest: createTokenBuf(500))
   c.typeCache.openScope()
-
-  checkContracts(c)
+  var n = beginRead(input)
+  traverseToplevel c, n
+  for r in c.routines:
+    checkContracts(c, r)
+  var nt = beginRead c.toplevelStmts
+  checkContracts(c, nt)
 
   endRead input
   restore(input, oldInfos)

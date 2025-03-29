@@ -4,6 +4,7 @@ include nifprelude
 import std / [assertions, tables]
 
 import ".." / nimony / [nimony_model, programs, decls]
+import duplifier
 
 
 proc hasContinueStmt(c: Cursor): bool =
@@ -310,6 +311,10 @@ proc replaceSymbol(e: var EContext; c: var Cursor; relations: var Table[SymId, S
 
 proc inlineIterator(e: var EContext; forStmt: ForStmt) =
   var iter = forStmt.iter
+  if iter.exprKind == HderefX:
+    # iterators return var/lent
+    inc iter
+  assert iter.exprKind in CallKinds
   inc iter
   let iterSym = iter.symId
   let res = tryLoadSym(iterSym)
@@ -326,7 +331,7 @@ proc inlineIterator(e: var EContext; forStmt: ForStmt) =
       let symId = name.symId
 
       let newName = pool.syms.getOrIncl(pool.syms[symId] & ".lf." & $e.instId)
-      createDecl(e, newName, typ, iter, name.info, "var")
+      createDecl(e, newName, typ, iter, name.info, if constructsValue(iter): "var" else: "cursor")
       relationsMap[symId] = newName
 
       skip params
@@ -420,11 +425,47 @@ proc transformForStmt(e: var EContext; c: var Cursor) =
   inc e.instId
   inlineIterator(e, forStmt)
 
-  e.dest.addParRi()
-  e.dest.addParRi()
+  discard e.breaks.pop()
+
+  e.dest.addParRi() # stmts
+  e.dest.addParRi() # block
 
   skip c
 
+proc transformLoopBody(e: var EContext; c: var Cursor) =
+  let loopBodyHasContinueStmt = hasContinueStmt(c)
+  if loopBodyHasContinueStmt:
+    let lab = pool.syms.getOrIncl("continueLabel." & $getTmpId(e))
+    e.dest.add tagToken($BlockS, c.info)
+    e.dest.add symdefToken(lab, c.info)
+    e.dest.add tagToken("stmts", c.info)
+    e.continues.add lab
+
+  transformStmt(e, c)
+
+  if loopBodyHasContinueStmt:
+    discard e.continues.pop()
+    e.dest.addParRi() # stmts
+    e.dest.addParRi() # block
+
+proc transformWhileStmt(e: var EContext; c: var Cursor) =
+  let lab = pool.syms.getOrIncl("whileStmtLabel." & $getTmpId(e))
+  e.dest.add tagToken($BlockS, c.info)
+  e.dest.add symdefToken(lab, c.info)
+  e.dest.add tagToken("stmts", c.info)
+
+  e.breaks.add lab
+  e.dest.add c
+  inc c
+
+  transformStmt(e, c) # condition
+  transformLoopBody(e, c)
+  takeParRi(e, c)
+
+  discard e.breaks.pop()
+
+  e.dest.addParRi() # stmts
+  e.dest.addParRi() # block
 
 proc transformStmt(e: var EContext; c: var Cursor) =
   case c.kind
@@ -448,11 +489,18 @@ proc transformStmt(e: var EContext; c: var Cursor) =
     of FuncS, ProcS, ConverterS, MethodS:
       e.dest.add c
       inc c
-      for i in 0..<BodyPos:
+      takeTree(e, c) # name
+      takeTree(e, c) # exported
+      takeTree(e, c) # pattern
+      let isGeneric = c.substructureKind == TypevarsU
+      for i in 3..<BodyPos:
         takeTree(e, c)
       let oldTmpId = e.tmpId
       e.tmpId = 0
-      transformStmt(e, c)
+      if isGeneric:
+        takeTree(e, c)
+      else:
+        transformStmt(e, c)
       e.tmpId = oldTmpId
       takeParRi(e, c)
     of VarS, LetS, CursorS, ResultS:
@@ -461,6 +509,21 @@ proc transformStmt(e: var EContext; c: var Cursor) =
       for i in 0..<LocalValuePos:
         takeTree(e, c)
       transformStmt(e, c)
+      takeParRi(e, c)
+    of WhileS:
+      transformWhileStmt(e, c)
+    of BreakS:
+      transformBreakStmt(e, c)
+    of ContinueS:
+      transformContinueStmt(e, c)
+    of BlockS:
+      e.dest.add c
+      inc c
+      e.breaks.add SymId(0)
+      e.dest.add c
+      inc c
+      transformStmt(e, c)
+      discard e.breaks.pop
       takeParRi(e, c)
     else:
       e.dest.add c

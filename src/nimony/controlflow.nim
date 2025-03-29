@@ -787,7 +787,8 @@ proc trExpr(c: var ControlFlow; n: var Cursor) =
        UnpackX, EnumToStrX, XorX,
        IsMainModuleX, DefaultObjX, DefaultTupX, PlusSetX, MinusSetX,
        MulSetX, XorSetX, EqSetX, LeSetX, LtSetX, InSetX, CardX, EmoveX,
-       DestroyX, DupX, CopyX, WasMovedX, SinkhX, TraceX, BracketX, CurlyX, TupX:
+       DestroyX, DupX, CopyX, WasMovedX, SinkhX, TraceX,
+       BracketX, CurlyX, TupX, OvfX:
       trExprLoop c, n
     of CompilesX, DeclaredX, DefinedX, HighX, LowX, TypeofX, SizeofX, AlignofX, OffsetofX:
       # we want to avoid false dependencies for `sizeof(var)` as it doesn't really "use" the variable:
@@ -810,15 +811,19 @@ proc trExpr(c: var ControlFlow; n: var Cursor) =
 
 proc toControlflow*(n: Cursor): TokenBuf =
   var c = ControlFlow(typeCache: createTypeCache())
-  assert n.stmtKind == StmtsS
   c.typeCache.openScope()
+  let sk = n.stmtKind
   var n = n
-  c.dest.add n
-  inc n
-  while n.kind != ParRi:
-    trStmt c, n
-  c.dest.addParPair RetS, NoLineInfo
-  c.dest.addParRi()
+  if sk in {ProcS, FuncS, IteratorS, ConverterS, MethodS, MacroS}:
+    trProc c, n
+  else:
+    assert sk == StmtsS
+    c.dest.add n
+    inc n
+    while n.kind != ParRi:
+      trStmt c, n
+    c.dest.addParPair RetS, NoLineInfo
+    c.dest.addParRi()
   c.typeCache.closeScope()
   result = ensureMove c.dest
   #echo "result: ", codeListing(result)

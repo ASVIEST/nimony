@@ -68,9 +68,164 @@ proc getFalseValue(c: var EvalContext): Cursor =
     c.falseValue = cursorAt(c.values[i], 0)
   result = c.falseValue
 
+proc getConstOrdinalValue*(val: Cursor): xint =
+  case val.kind
+  of CharLit:
+    result = createXint val.uoperand
+  of IntLit:
+    result = createXint pool.integers[val.intId]
+  of UIntLit:
+    result = createXint pool.uintegers[val.uintId]
+  of ParLe:
+    case val.exprKind
+    of FalseX:
+      result = createXint(0'i64)
+    of TrueX:
+      result = createXint(1'i64)
+    else:
+      result = createNaN()
+  else:
+    result = createNaN()
+
+proc singleToken*(c: var EvalContext; tok: PackedToken): Cursor =
+  let i = c.values.len
+  c.values.add createTokenBuf(1)
+  c.values[i].add tok
+  result = cursorAt(c.values[i], 0)
+
+proc stringValue(c: var EvalContext; s: string; info: PackedLineInfo): Cursor {.inline.} =
+  result = singleToken(c, strToken(pool.strings.getOrIncl(s), info))
+
+proc intValue(c: var EvalContext; i: int64; info: PackedLineInfo): Cursor {.inline.} =
+  result = singleToken(c, intToken(pool.integers.getOrIncl(i), info))
+
+proc uintValue(c: var EvalContext; u: uint64; info: PackedLineInfo): Cursor {.inline.} =
+  result = singleToken(c, uintToken(pool.uintegers.getOrIncl(u), info))
+
+proc floatValue(c: var EvalContext; f: float; info: PackedLineInfo): Cursor {.inline.} =
+  result = singleToken(c, floatToken(pool.floats.getOrIncl(f), info))
+
+proc charValue(c: var EvalContext; ch: char; info: PackedLineInfo): Cursor {.inline.} =
+  result = singleToken(c, charToken(ch, info))
+
+proc boolValue(c: var EvalContext; val: bool): Cursor {.inline.} =
+  if val:
+    result = getTrueValue(c)
+  else:
+    result = getFalseValue(c)
+
+template error(msg: string; info: PackedLineInfo) {.dirty.} =
+  result = c.error(msg, info)
+
+template cannotEval(n: Cursor) {.dirty.} =
+  result = c.error("cannot evaluate expression at compile time: " & asNimCode(n), n.info)
+
+proc eval*(c: var EvalContext; n: var Cursor): Cursor
+
+proc evalCall(c: var EvalContext; n: Cursor): Cursor =
+  var callee = n
+  inc callee
+  if callee.kind != Symbol:
+    cannotEval(n)
+    return
+  let res = tryLoadSym(callee.symId)
+  if res.status != LacksNothing or not isRoutine(res.decl.symKind):
+    cannotEval(n)
+    return
+  let routine = asRoutine(res.decl)
+  var op = ""
+  var pragmas = routine.pragmas
+  if pragmas.substructureKind == PragmasU:
+    inc pragmas
+    while pragmas.kind != ParRi:
+      var prag = pragmas
+      if prag.pragmaKind == SemanticsP:
+        inc prag
+        if prag.kind in {Ident, StringLit}:
+          op = pool.strings[prag.litId]
+          break
+      skip pragmas
+  if op == "":
+    cannotEval(n)
+    return
+  var args = n
+  inc args
+  skip args
+  case op
+  of "string.&":
+    let a = eval(c, args)
+    let b = eval(c, args)
+    if a.kind != StringLit or b.kind != StringLit or args.kind != ParRi:
+      cannotEval(n)
+      return
+    let val = pool.strings[a.litId] & pool.strings[b.litId]
+    result = stringValue(c, val, n.info)
+  of "string.==":
+    let a = eval(c, args)
+    let b = eval(c, args)
+    if a.kind != StringLit or b.kind != StringLit or args.kind != ParRi:
+      cannotEval(n)
+      return
+    let val = pool.strings[a.litId] == pool.strings[b.litId]
+    result = boolValue(c, val)
+  of "string.len":
+    let a = eval(c, args)
+    if a.kind != StringLit or args.kind != ParRi:
+      cannotEval(n)
+      return
+    let val = pool.strings[a.litId].len
+    result = intValue(c, val, n.info)
+  else:
+    cannotEval(n)
+
+template evalOrdBinOp(c: var EvalContext; n: var Cursor; opr: untyped) {.dirty.} =
+  let orig = n
+  inc n # tag
+  let isSigned = n.typeKind == IntT
+  skip n # type
+  let a = getConstOrdinalValue eval(c, n)
+  let b = getConstOrdinalValue eval(c, n)
+  skipParRi n
+  if not isNaN(a) and not isNaN(b):
+    let rx = opr(a, b)
+    var err = false
+    if isSigned:
+      let ri = asSigned(rx, err)
+      if err:
+        error "expression overflow at compile time: " & asNimCode(orig), orig.info
+      else:
+        result = intValue(c, ri, orig.info)
+    else:
+      let ru = asUnsigned(rx, err)
+      if err:
+        error "expression overflow at compile time: " & asNimCode(orig), orig.info
+      else:
+        result = uintValue(c, ru, orig.info)
+  else:
+    cannotEval orig
+
+template evalFloatBinOp(c: var EvalContext; n: var Cursor; opr: untyped) {.dirty.} =
+  let orig = n
+  inc n # tag
+  skip n # type
+  let a = eval(c, n)
+  let b = eval(c, n)
+  skipParRi n
+  if a.kind == FloatLit and b.kind == FloatLit:
+    let rf = opr(pool.floats[a.floatId], pool.floats[b.floatId])
+    result = floatValue(c, rf, orig.info)
+  else:
+    cannotEval orig
+
+template evalBinOp(c: var EvalContext; n: var Cursor; opr: untyped) {.dirty.} =
+  var t = n
+  inc t
+  if t.typeKind == FloatT:
+    evalFloatBinOp(c, n, opr)
+  else:
+    evalOrdBinOp(c, n, opr)
+
 proc eval*(c: var EvalContext; n: var Cursor): Cursor =
-  template error(msg: string; info: PackedLineInfo) =
-    result = c.error(msg, info)
   template propagateError(r: Cursor): Cursor =
     let val = r
     if val.kind == ParLe and val.tagId == nifstreams.ErrT:
@@ -163,23 +318,70 @@ proc eval*(c: var EvalContext; n: var Cursor): Cursor =
       skipParRi n
       if typ.typeKind == CstringT and val.kind == StringLit:
         result = val
+      elif typ.typeKind == UIntT:
+        let x = getConstOrdinalValue(val)
+        var err = false
+        let u = asUnsigned(x, err)
+        if err:
+          cannotEval nOrig
+        else:
+          result = uintValue(c, u, nOrig.info)
+      elif typ.typeKind == IntT:
+        let x = getConstOrdinalValue(val)
+        var err = false
+        let i = asSigned(x, err)
+        if err:
+          cannotEval nOrig
+        else:
+          result = intValue(c, i, nOrig.info)
+      elif typ.typeKind == CharT:
+        let x = getConstOrdinalValue(val)
+        var err = false
+        let ch = asUnsigned(x, err)
+        if err or ch >= 256u:
+          cannotEval nOrig
+        else:
+          result = charValue(c, char(ch), nOrig.info)
       else:
         # other conversions not implemented
-        error "cannot evaluate expression at compile time: " & asNimCode(nOrig), nOrig.info
+        cannotEval nOrig
     of DconvX:
       inc n # tag
       skip n # type
       result = eval(c, n)
       skipParRi n
+    of ExprX:
+      let orig = n
+      inc n # tag
+      result = eval(c, n)
+      if n.kind == ParRi:
+        inc n
+      else:
+        # was not a trivial ExprX, so we could not evaluate it
+        cannotEval orig
+    of MulX:
+      evalBinOp(c, n, `*`)
+    of AddX:
+      evalBinOp(c, n, `+`)
+    of SubX:
+      evalBinOp(c, n, `-`)
+    of DivX:
+      var t = n
+      inc t
+      if t.typeKind == FloatT:
+        evalFloatBinOp(c, n, `/`)
+      else:
+        evalOrdBinOp(c, n, `div`)
+    of ModX:
+      evalOrdBinOp(c, n, `mod`)
     of IsMainModuleX:
       inc n
       skipParRi n
       if c.c == nil:
-        error "cannot evaluate expression at compile time: " & asNimCode(n), n.info
-      elif IsMain in c.c.moduleFlags:
-        result = c.getTrueValue()
+        cannotEval n
       else:
-        result = c.getFalseValue()
+        let val = IsMain in c.c.moduleFlags
+        result = boolValue(c, val)
     of AconstrX, SetconstrX, TupconstrX,
         BracketX, CurlyX, TupX:
       let valPos = c.values.len
@@ -194,39 +396,23 @@ proc eval*(c: var EvalContext; n: var Cursor): Cursor =
         c.values[valPos].addSubtree elem
       takeParRi c.values[valPos], n
       result = cursorAt(c.values[valPos], 0)
+    of CallKinds:
+      result = evalCall(c, n)
+      skip n
     else:
       if n.tagId == ErrT:
         result = n
         skip n
       else:
-        error "cannot evaluate expression at compile time: " & asNimCode(n), n.info
+        cannotEval n
   else:
-    error "cannot evaluate expression at compile time: " & asNimCode(n), n.info
+    cannotEval n
 
 proc evalExpr*(c: var SemContext, n: var Cursor): TokenBuf =
   var ec = initEvalContext(addr c)
   let val = eval(ec, n)
   result = createTokenBuf(val.span)
   result.addSubtree val
-
-proc getConstOrdinalValue*(val: Cursor): xint =
-  case val.kind
-  of CharLit:
-    result = createXint val.uoperand
-  of IntLit:
-    result = createXint pool.integers[val.intId]
-  of UIntLit:
-    result = createXint pool.uintegers[val.uintId]
-  of ParLe:
-    case val.exprKind
-    of FalseX:
-      result = createXint(0'i64)
-    of TrueX:
-      result = createXint(1'i64)
-    else:
-      result = createNaN()
-  else:
-    result = createNaN()
 
 proc evalOrdinal(c: ptr SemContext, n: Cursor): xint =
   var ec = initEvalContext(c)
@@ -404,7 +590,7 @@ proc annotateConstantType*(buf: var TokenBuf; typ, n: Cursor) =
     else: err = true
   of ParLe:
     let exprKind = n.exprKind
-    case exprKind 
+    case exprKind
     of TrueX, FalseX:
       if typ.typeKind == BoolT:
         buf.addSubtree n

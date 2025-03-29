@@ -12,6 +12,7 @@ import std / [hashes, os, tables, sets, assertions]
 include nifprelude
 import symparser
 import typekeys
+import ".." / models / tags
 import ".." / nimony / [nimony_model, programs, typenav, expreval, xints, decls, builtintypes, sizeof, typeprops]
 import hexer_context, pipeline
 import  ".." / lib / stringtrees
@@ -325,7 +326,7 @@ proc traverseAsNamedType(c: var EContext; n: var Cursor) =
   let info = n.info
   var body = n
   let k = body.typeKind
-  let key = takeMangle n
+  let key = takeMangle(n, c.bits)
 
   var val = c.newTypes.getOrDefault(key)
   if val == SymId(0):
@@ -631,7 +632,8 @@ proc parsePragmas(c: var EContext; n: var Cursor): CollectedPragmas =
           expectIntLit c, n
           result.bits = n.intId
           inc n
-        of RequiresP, EnsuresP, StringP, RaisesP, ErrorP, AssumeP, AssertP:
+        of RequiresP, EnsuresP, StringP, RaisesP, ErrorP, AssumeP, AssertP, ReportP,
+           TagsP, DeprecatedP, SideEffectP, KeepOverflowFlagP, SemanticsP:
           skip n
           continue
         of BuildP, EmitP:
@@ -662,13 +664,16 @@ proc traverseProcBody(c: var EContext; n: var Cursor) =
 
 template moveToTopLevel(c: var EContext; mode: TraverseMode; body: typed) =
   if mode == TraverseAll:
-    swap c.dest, c.pending
+    var temp = createTokenBuf()
+    swap c.dest, temp
     body
-    swap c.dest, c.pending
+    swap c.dest, temp
+    c.pending.add temp
   else:
     body
 
-proc makeLocalProcDeclName(c: var EContext; s: SymId): string =
+proc makeLocalDeclName(c: var EContext; s: SymId): string =
+  # for proc and type decls
   result = pool.syms[s]
   extractBasename(result)
   result.add "."
@@ -676,6 +681,14 @@ proc makeLocalProcDeclName(c: var EContext; s: SymId): string =
   inc c.localDeclCounters
   result.add "."
   result.add c.main
+
+proc makeLocalSymId(c: var EContext; s: SymId; registerParentScope: bool): SymId =
+  let newName = makeLocalDeclName(c, s)
+  result = pool.syms.getOrIncl(newName)
+  if registerParentScope:
+    registerMangleInParent(c, s, newName)
+  else:
+    registerMangle(c, s, newName)
 
 proc traverseProc(c: var EContext; n: var Cursor; mode: TraverseMode) =
   c.openMangleScope()
@@ -692,10 +705,7 @@ proc traverseProc(c: var EContext; n: var Cursor; mode: TraverseMode) =
 
   if mode == TraverseAll:
     # namePos
-    let newName = makeLocalProcDeclName(c, s)
-    let newSymId = pool.syms.getOrIncl(newName)
-    c.dest.add symdefToken(newSymId, sinfo)
-    registerMangleInParent(c, s, newName)
+    c.dest.add symdefToken(makeLocalSymId(c, s, true), sinfo)
   else:
     # namePos
     c.dest.add symdefToken(s, sinfo)
@@ -784,7 +794,7 @@ proc traverseProc(c: var EContext; n: var Cursor; mode: TraverseMode) =
   c.closeMangleScope()
   c.resultSym = oldResultSym
 
-proc traverseTypeDecl(c: var EContext; n: var Cursor) =
+proc traverseTypeDecl(c: var EContext; n: var Cursor; mode: TraverseMode) =
   var dst = createTokenBuf(50)
   swap c.dest, dst
   #let toPatch = c.dest.len
@@ -794,7 +804,10 @@ proc traverseTypeDecl(c: var EContext; n: var Cursor) =
   let (s, sinfo) = getSymDef(c, n)
   let oldOwner = setOwner(c, s)
 
-  c.dest.add symdefToken(s, sinfo)
+  if mode == TraverseAll:
+    c.dest.add symdefToken(makeLocalSymId(c, s, false), sinfo)
+  else:
+    c.dest.add symdefToken(s, sinfo)
   c.offer s
 
   var isGeneric = n.kind == ParLe
@@ -1060,6 +1073,7 @@ proc traverseExpr(c: var EContext; n: var Cursor) =
       inc n
       traverseExpr(c, n)
       traverseExpr(c, n)
+      while n.kind != ParRi: skip n
       takeParRi c, n
     of TupatX:
       c.dest.add tagToken("dot", n.info)
@@ -1151,7 +1165,7 @@ proc traverseExpr(c: var EContext; n: var Cursor) =
       #skip n
     of AtX, PatX, ParX, NilX, InfX, NeginfX, NanX, FalseX, TrueX, AndX, OrX, NotX, NegX,
        AddX, SubX, MulX, DivX, ModX, ShrX, ShlX,
-       BitandX, BitorX, BitxorX, BitnotX, OconvX:
+       BitandX, BitorX, BitxorX, BitnotX, OconvX, OvfX:
       c.dest.add n
       inc n
       while n.kind != ParRi:
@@ -1367,6 +1381,13 @@ proc traverseCase(c: var EContext; n: var Cursor) =
       error c, "expected (of) or (else) but got: ", n
   takeParRi c, n
 
+proc traverseKeepovf(c: var EContext; n: var Cursor) =
+  c.dest.add n
+  inc n
+  traverseExpr c, n # (add ...)
+  traverseExpr c, n # destination
+  takeParRi c, n
+
 proc traverseStmt(c: var EContext; n: var Cursor; mode = TraverseAll) =
   case n.kind
   of DotToken:
@@ -1375,7 +1396,10 @@ proc traverseStmt(c: var EContext; n: var Cursor; mode = TraverseAll) =
   of ParLe:
     case n.stmtKind
     of NoStmt:
-      error c, "unknown statement: ", n
+      if n.tagId == TagId(KeepovfTagId):
+        traverseKeepovf c, n
+      else:
+        error c, "unknown statement: ", n
     of StmtsS:
       if mode == TraverseTopLevel:
         inc n
@@ -1462,7 +1486,8 @@ proc traverseStmt(c: var EContext; n: var Cursor; mode = TraverseAll) =
       # pure compile-time construct, ignore:
       skip n
     of TypeS:
-      traverseTypeDecl c, n
+      moveToTopLevel(c, mode):
+        traverseTypeDecl c, n, mode
     of ContinueS, WhenS:
       error c, "unreachable: ", n
     of PragmasS, AssumeS, AssertS:
@@ -1493,7 +1518,7 @@ proc importSymbol(c: var EContext; s: SymId) =
     let kind = n.symKind
     case kind
     of TypeY:
-      traverseTypeDecl c, n
+      traverseTypeDecl c, n, TraverseSig
     of EfldY:
       # import full enum type:
       let typ = asLocal(n).typ

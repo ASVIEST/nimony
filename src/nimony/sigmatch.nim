@@ -20,6 +20,7 @@ type
     kind*: SymKind
     sym*: SymId
     typ*: Cursor
+    fromConcept*: bool
 
   MatchErrorKind* = enum
     InvalidMatch
@@ -229,16 +230,20 @@ proc matchesConstraintAux(m: var Match; f: var Cursor; a: Cursor): bool =
     inc f
     result = true
     while f.kind != ParRi:
-      if not matchesConstraint(m, f, a):
+      var f2 = f
+      if not matchesConstraint(m, f2, a):
         result = false
         break
+      skip f
     skipToEnd f
   of OrT:
     inc f
     while f.kind != ParRi:
-      if matchesConstraint(m, f, a):
+      var f2 = f
+      if matchesConstraint(m, f2, a):
         result = true
         break
+      skip f
     skipToEnd f
   of ConceptT:
     # XXX Use some algorithm here that can cache the result
@@ -263,7 +268,15 @@ proc matchesConstraintAux(m: var Match; f: var Cursor; a: Cursor): bool =
     assert f.kind == ParRi
     inc f
   of OrdinalT:
-    result = isOrdinalType(a)
+    case a.typeKind
+    of OrdinalT:
+      result = true
+    of TypeKindT:
+      var aTag = a
+      inc aTag
+      result = isOrdinalTypeKind(aTag.typeKind)
+    else:
+      result = isOrdinalType(a)
     skip f
   else:
     result = false
@@ -616,10 +629,20 @@ proc checkIntLitRange(context: ptr SemContext; f: Cursor; intLit: Cursor): bool 
     let i = createXint(pool.integers[intLit.intId])
     result = i >= firstOrd(context[], f) and i <= lastOrd(context[], f)
 
+proc skipExpr*(n: Cursor): Cursor =
+  result = n
+  while result.exprKind in {ExprX, ParX}:
+    inc result
+    var next = result
+    while next.kind != ParRi:
+      result = next
+      skip next
+
 proc matchIntegralType(m: var Match; f: var Cursor; arg: Item) =
   var a = skipModifier(arg.typ)
+  let ex = skipExpr(arg.n)
   let isIntLit = f.typeKind != CharT and
-    arg.n.kind == IntLit and sameTrees(a, m.context.types.intType)
+    ex.kind == IntLit and sameTrees(a, m.context.types.intType)
   let sameKind = f.tag == a.tag
   if sameKind or isIntLit:
     inc a
@@ -631,7 +654,7 @@ proc matchIntegralType(m: var Match; f: var Cursor; arg: Item) =
   let cmp = cmpTypeBits(m.context, f, a)
   if cmp == 0 and sameKind:
     discard "same types"
-  elif cmp > 0 or (isIntLit and checkIntLitRange(m.context, forig, arg.n)):
+  elif cmp > 0 or (isIntLit and checkIntLitRange(m.context, forig, ex)):
     # f has more bits than a, great!
     if m.skippedMod in {MutT, OutT}:
       m.error ImplicitConversionNotMutable, forig, forig
@@ -755,7 +778,7 @@ proc singleArgImpl(m: var Match; f: var Cursor; arg: Item) =
         discard "ok"
         inc f
         expectParRi m, f
-      elif isStringType(a) and arg.n.kind == StringLit:
+      elif isStringType(a) and skipExpr(arg.n).kind == StringLit:
         m.args.addParLe HconvX, m.argInfo
         m.args.addSubtree f
         inc m.opened
@@ -875,6 +898,7 @@ proc addEmptyRangeType(buf: var TokenBuf; c: ptr SemContext; info: PackedLineInf
   buf.addParRi()
 
 proc matchEmptyContainer(m: var Match; f: var Cursor; arg: Item) =
+  # XXX handle empty containers nested inside (expr)
   if (arg.n.exprKind == AconstrX and f.typeKind == ArrayT) or
       (arg.n.exprKind == SetConstrX and f.typeKind == SetT):
     # could also handle case where `f` is a typevar
@@ -943,6 +967,7 @@ proc singleArg(m: var Match; f: var Cursor; arg: Item) =
       dec m.opened
 
 proc typematch*(m: var Match; formal: Cursor; arg: Item) =
+  m.argInfo = arg.n.info
   var f = formal
   singleArg m, f, arg
 

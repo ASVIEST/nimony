@@ -11,6 +11,7 @@
 
 import std / [assertions, syncio, tables, sets, intsets, formatfloat, strutils, packedsets]
 from std / os import changeFileExt, splitFile, extractFilename
+from std / sequtils import insert
 
 include ".." / lib / nifprelude
 import mangler, nifc_model, cprelude, noptions, typenav
@@ -65,6 +66,7 @@ type
     CatchKeyword = "catch ("
     ThrowKeyword = "throw"
     ErrToken = "NIFC_ERR_"
+    OvfToken = "NIFC_OVF_"
     ThreadVarToken = "NIM_THREADVAR "
 
 proc fillTokenTable(tab: var BiTable[Token, string]) =
@@ -78,6 +80,9 @@ type
     gfHasError   # already generated the error variable
     gfProducesMainProc # needs main proc
     gfInCallImportC # in importC call context
+
+  CurrentProc* = object
+    needsOverflowFlag: bool
 
   GeneratedCode* = object
     m: Module
@@ -95,11 +100,13 @@ type
     flags: set[GenFlag]
     inToplevel: bool
     objConstrNeedsType: bool
+    bits: int
+    currentProc: CurrentProc
 
-proc initGeneratedCode*(m: sink Module, flags: set[GenFlag]): GeneratedCode =
+proc initGeneratedCode*(m: sink Module, flags: set[GenFlag]; bits: int): GeneratedCode =
   result = GeneratedCode(m: m, code: @[], tokens: initBiTable[Token, string](),
       fileIds: initPackedSet[FileId](), flags: flags, inToplevel: true,
-      objConstrNeedsType: true)
+      objConstrNeedsType: true, bits: bits)
   fillTokenTable(result.tokens)
 
 proc add*(c: var GeneratedCode; t: PredefinedToken) {.inline.} =
@@ -164,9 +171,9 @@ proc error(m: Module; msg: string; n: Cursor) {.noreturn.} =
 
 proc genIntLit(c: var GeneratedCode; litId: IntId) =
   let i = pool.integers[litId]
-  if i > low(int32) and i <= high(int32):
+  if i > low(int32) and i <= high(int32) and c.bits != 64:
     c.add $i
-  elif i == low(int32):
+  elif i == low(int32) and c.bits != 64:
     # Nim has the same bug for the same reasons :-)
     c.add "(-2147483647 -1)"
   elif i > low(int64):
@@ -178,7 +185,7 @@ proc genIntLit(c: var GeneratedCode; litId: IntId) =
 
 proc genUIntLit(c: var GeneratedCode; litId: UIntId) =
   let i = pool.uintegers[litId]
-  if i <= high(uint32):
+  if i <= high(uint32) and c.bits != 64:
     c.add $i
     c.add "u"
   else:
@@ -458,10 +465,22 @@ proc genVarDecl(c: var GeneratedCode; n: var Cursor; vk: VarKind; toExtern = fal
 
 include genstmts
 
+proc addOverflowDecl(c: var GeneratedCode; code: var seq[Token]; beforeBody: int) =
+  let tokens = @[
+    c.tokens.getOrIncl("NB8"),
+    Token(Space),
+    Token(OvfToken),
+    Token(AsgnOpr),
+    c.tokens.getOrIncl("NIM_FALSE"),
+    Token(Semicolon)
+  ]
+  code.insert(tokens, beforeBody)
 
 proc genProcDecl(c: var GeneratedCode; n: var Cursor; isExtern: bool) =
   c.m.openScope()
   c.inToplevel = false
+  let oldProc = c.currentProc
+  c.currentProc = CurrentProc(needsOverflowFlag: false)
   let signatureBegin = c.code.len
   var prc = takeProcDecl(n)
 
@@ -554,12 +573,16 @@ proc genProcDecl(c: var GeneratedCode; n: var Cursor; isExtern: bool) =
     if isSelectAny in flags:
       genRoutineGuardBegin(c, name)
     c.add CurlyLe
+    let beforeBody = c.code.len
     genStmt c, prc.body
+    if c.currentProc.needsOverflowFlag:
+      addOverflowDecl c, c.code, beforeBody
     c.add CurlyRi
     if isSelectAny in flags:
       genRoutineGuardEnd(c)
   c.m.closeScope()
   c.inToplevel = true
+  c.currentProc = oldProc
 
 proc genInclude(c: var GeneratedCode; n: var Cursor) =
   inc n
@@ -622,7 +645,7 @@ proc genToplevel(c: var GeneratedCode; n: var Cursor) =
   of ProcS: genProcDecl c, n, false
   of VarS, GvarS, TvarS: genStmt c, n
   of ConstS: genStmt c, n
-  of DiscardS, AsgnS, ScopeS, IfS,
+  of DiscardS, AsgnS, KeepovfS, ScopeS, IfS,
       WhileS, CaseS, LabS, JmpS, TryS, RaiseS, CallS, OnErrS:
     moveToInitSection:
       genStmt c, n
@@ -654,7 +677,7 @@ proc writeLineDir(f: var CppFile, c: var GeneratedCode) =
 proc generateCode*(s: var State, inp, outp: string; flags: set[GenFlag]) =
   var m = load(inp)
   m.config = s.config
-  var c = initGeneratedCode(m, flags)
+  var c = initGeneratedCode(m, flags, s.bits)
   c.m.openScope()
 
   var co = TypeOrder()
@@ -690,6 +713,8 @@ proc generateCode*(s: var State, inp, outp: string; flags: set[GenFlag]) =
     f.write "}\n\n"
   elif c.init.len > 0:
     f.write "static void __attribute__((constructor)) init(void) {"
+    if c.currentProc.needsOverflowFlag:
+      addOverflowDecl c, c.init, 0
     writeTokenSeq f, c.init, c
     f.write "}\n\n"
   f.f.close

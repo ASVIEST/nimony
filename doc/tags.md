@@ -29,6 +29,7 @@
 | `(curlyat X X)`        | NimonyExpr, NiflerKind | curly expression `a{i}` |
 | `(kv Y X)`             | NimonyOther, NifcOther, NiflerKind, NifIndexKind | key-value pair |
 | `(vv X X)`             | NimonyOther, NiflerKind, NifIndexKind | value-value pair (used for explicitly named arguments in function calls) |
+| `(ovf)`                | NimonyExpr, NifcExpr | access overflow flag |
 | `(add T X X)`          | NifcExpr, NimonyExpr | |
 | `(sub T X X)`          | NifcExpr, NimonyExpr | |
 | `(mul T X X)`          | NifcExpr, NimonyExpr | |
@@ -77,6 +78,7 @@
 | `(ochoice X X*)`| NimonyExpr | open choice |
 | `(emit X*)` | NifcStmt, NimonyStmt, NimonyPragma | emit statement |
 | `(asgn X X)` | NifcStmt, NimonyStmt, NiflerKind | assignment statement |
+| `(keepovf X X)` | NifcStmt | keep overflow flag statement |
 | `(scope S*)` | NifcStmt, NimonyStmt | explicit scope annotation, like `stmts` |
 | `(if (elif X X)+ (else X)?)` | NifcStmt, NimonyStmt, NiflerKind | if statement header |
 | `(when (elif X X)+ (else X)?)` | NimonyStmt, NiflerKind | when statement header |
@@ -239,7 +241,7 @@
 | `(defaulttup T)` | NimonyExpr | |
 | `(expr S+ X)` | NimonyExpr, NiflerKind | |
 | `(do (params...)+ T X)` | NimonyExpr, NiflerKind | `do` expression |
-| `(arrat X X)` | NimonyExpr | |
+| `(arrat X X X? X?)` | NimonyExpr | two optional exprs: `high` boundary and the `low` boundary (if != 0) |
 | `(tupat X X)` | NimonyExpr | |
 | `(plusset T X X)` | NimonyExpr | |
 | `(minusset T X X)` | NimonyExpr | |
@@ -270,3 +272,9 @@
 | `(inject)` | NimonyPragma | `inject` pragma |
 | `(gensym)` | NimonyPragma | `gensym` pragma |
 | `(error X?)` | NimonyPragma | `error` pragma |
+| `(report X)` | NimonyPragma | `report` pragma |
+| `(tags X)` | NimonyPragma | `tags` effect annotation |
+| `(deprecated X?)` | NimonyPragma | `deprecated` pragma |
+| `(sideEffect)` | NimonyPragma | explicit `sideEffect` pragma |
+| `(keepOverflowFlag)` | NimonyPragma | keep overflow flag |
+| `(semantics STR)` | NimonyPragma | proc with builtin behavior for expreval |
