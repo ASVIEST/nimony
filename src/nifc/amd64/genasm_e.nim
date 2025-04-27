@@ -174,6 +174,18 @@ proc genMov(c: var GeneratedCode; dest, src: Location) =
     c.buildTree LeaT:
       c.emitLoc dest
       c.emitLoc src
+  elif dest.kind == InData:
+    echo dest.typ.size
+    let op =
+      case dest.typ.size
+      of 8, 4: MovqT
+      of 2: MovwT
+      of 1: MovbT
+      else: MovT
+    
+    c.buildTree op:
+      c.emitLoc dest
+      c.emitLoc src
   else:
     c.buildTree MovT:
       c.emitLoc dest
