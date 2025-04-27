@@ -63,23 +63,30 @@ proc genExternDecl(c: var Context): bool =
     handleExternDecl(c, before1)
   return true
 
-proc genDataValue(c: var Context): bool =
+proc genDataValue(c: var Context, stTyp: string): bool =
   when declared(handleDataValue):
     var before1 = save(c)
+  emit(c, stTyp)
+  
   var or2 = false
   block or3:
+    var st4 = getStack(c)
     if matchStringLit(c):
       or2 = true
       break or3
+    restoreStack(c, st4)
     if matchIntLit(c):
       or2 = true
       break or3
+    restoreStack(c, st4)
     if matchUIntLit(c):
       or2 = true
       break or3
+    restoreStack(c, st4)
     if matchFloatLit(c):
       or2 = true
       break or3
+    restoreStack(c, st4)
   if not or2: return false
   when declared(handleDataValue):
     handleDataValue(c, before1)
@@ -88,25 +95,30 @@ proc genDataValue(c: var Context): bool =
 proc genDataKey(c: var Context): bool =
   when declared(handleDataKey):
     var before1 = save(c)
+  var stTyp = popStack(c)
+  
   var or2 = false
   block or3:
-    if genDataValue(c):
+    var st4 = getStack(c)
+    if genDataValue(c, stTyp):
       or2 = true
       break or3
-    var kw4 = false
+    restoreStack(c, st4)
+    var kw5 = false
     if isTag(c, TimesT):
       emit(c, ".rept ")
       if not matchIntLit(c):
         error(c, "INTLIT expected")
       nl(c)
-      if not genDataValue(c):
+      if not genDataValue(c, stTyp):
         error(c, "DataValue expected")
       nl(c)
       emit(c, ".endr")
-      kw4 = matchParRi(c)
-    if kw4:
+      kw5 = matchParRi(c)
+    if kw5:
       or2 = true
       break or3
+    restoreStack(c, st4)
   if not or2: return false
   nl(c)
   

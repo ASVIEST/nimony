@@ -21,6 +21,9 @@ type
     current: Cursor
     input: TokenBuf
     dest: string
+    stack: seq[string]
+    inStack: bool
+    stackSave: seq[string]
 
 proc fatal*(msg: string) =
   quit msg
@@ -35,9 +38,29 @@ proc setupInput(c: var Context; buffer: string) =
     if t.kind == EofToken: break
     c.input.add t
 
+proc startStack(c: var Context) =
+  c.inStack = true
+  assert len(c.stack) == 0
+
+proc endStack(c: var Context) =
+  c.inStack = false
+  for i in c.stack:
+    c.dest.add i
+  c.stack = @[]
+
+proc popStack(c: var Context): string =
+  c.stack.pop()
+
+proc addStr(c: var Context, s: string) =
+  if not c.inStack: c.dest.add s
+  else: c.stack.add s
+
 proc matchIntLit(c: var Context): bool =
   if c.current.kind == IntLit:
-    c.dest.addInt pool.integers[c.current.intId]
+    var outp = ""
+    outp.addInt pool.integers[c.current.intId]
+    c.addStr(outp)
+
     inc c.current
     result = true
   else:
@@ -45,7 +68,9 @@ proc matchIntLit(c: var Context): bool =
 
 proc matchUIntLit(c: var Context): bool =
   if c.current.kind == UIntLit:
-    c.dest.add $pool.uintegers[c.current.uintId]
+    var outp = ""
+    outp.add $pool.uintegers[c.current.uintId]
+    c.addStr(outp)
     inc c.current
     result = true
   else:
@@ -53,7 +78,9 @@ proc matchUIntLit(c: var Context): bool =
 
 proc matchFloatLit(c: var Context): bool =
   if c.current.kind == FloatLit:
-    c.dest.add $cast[int64](pool.floats[c.current.floatId])
+    var outp = ""
+    outp.add $cast[int64](pool.floats[c.current.floatId])
+    c.addStr(outp)
     inc c.current
     result = true
   else:
@@ -61,7 +88,9 @@ proc matchFloatLit(c: var Context): bool =
 
 proc matchStringLit(c: var Context): bool =
   if c.current.kind == StringLit:
-    c.dest.add escape(pool.strings[c.current.litId])
+    var outp = ""
+    outp.add escape(pool.strings[c.current.litId])
+    c.addStr(outp)
     inc c.current
     result = true
   else:
@@ -69,11 +98,19 @@ proc matchStringLit(c: var Context): bool =
 
 proc matchIdent(c: var Context): bool =
   if c.current.kind == Ident:
-    c.dest.add pool.strings[c.current.litId]
+    var outp = ""
+    outp.add pool.strings[c.current.litId]
+    c.addStr(outp)
     inc c.current
     result = true
   else:
     result = false
+
+proc getStack(c: var Context): seq[string] =
+  c.stack
+
+proc restoreStack(c: var Context, stack: seq[string]) =
+  c.stack = stack
 
 proc isTag(c: var Context; tag: TagId): bool =
   if c.current.kind == ParLe and c.current.tagId == tag:
@@ -106,11 +143,13 @@ proc peekParRi(c: var Context): bool {.inline.} =
   c.current.kind == ParRi
 
 proc emitTag(c: var Context; tag: string) =
-  c.dest.add tag
-  c.dest.add " "
+  var outp = ""
+  outp.add tag
+  outp.add " "
+  c.addStr(outp)
 
 proc emit(c: var Context; token: string) =
-  c.dest.add token
+  c.addStr(token)
 
 proc matchAndEmitTag(c: var Context; tag: TagId; asStr: string): bool =
   if c.current.kind == ParLe and c.current.tagId == tag:
@@ -146,12 +185,12 @@ proc matchAny(c: var Context): bool =
           dec nested
           if nested == 0: break
 
-proc nl(c: var Context) = c.dest.add "\n"
+proc nl(c: var Context) = c.addStr("\n")
 
 proc lookupSym(c: var Context): bool =
   if c.current.kind in {Symbol, Ident}:
-    if c.current.kind == Symbol: c.dest.add mangle(pool.syms[c.current.symId])
-    else: c.dest.add mangle(pool.strings[c.current.litId])
+    if c.current.kind == Symbol: c.addStr mangle(pool.syms[c.current.symId])
+    else: c.addStr mangle(pool.strings[c.current.litId])
       # allowing ident is very strange bug, 
       # for some unknown reason Symbol turns into Ident
       # so it realy need
@@ -162,7 +201,7 @@ proc lookupSym(c: var Context): bool =
 
 proc declareSym(c: var Context): bool =
   if c.current.kind == SymbolDef:
-    c.dest.add mangle(pool.syms[c.current.symId])
+    c.addStr mangle(pool.syms[c.current.symId])
     inc c.current
     result = true
   else:
