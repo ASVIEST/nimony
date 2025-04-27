@@ -11,14 +11,14 @@
 
 (RULE :DataValue TYP (OR STRINGLITERAL INTLIT UINTLIT FLOATLIT))
 (RULE :DataKey (POP :TYP) (OR DataValue (times ".rept " INTLIT (DO "nl") DataValue (DO "nl") ".endr")) (DO "nl"))
-(RULE :DataDecl SYMBOLDEF ":" (DO "nl") (ONE_OR_MANY (OR
+(RULE :DataDecl SYMBOLDEF ":" (DO "nl") (STACK (ONE_OR_MANY (OR
   (string ".string " DataKey)
   (byte ".byte " DataKey)
   (word ".short " DataKey)
   (long ".long " DataKey)
   (quad ".quad " DataKey)
 
-)) (DO "nl"))
+))) (DO "nl"))
 
 (RULE :Data (data ".section .bss" (DO "nl") (ZERO_OR_MANY DataDecl)) (DO "nl"))
 (RULE :Rodata (rodata ".section .rodata" (DO "nl") (ZERO_OR_MANY DataDecl)) (DO "nl"))

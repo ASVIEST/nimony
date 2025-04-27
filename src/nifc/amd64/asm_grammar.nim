@@ -135,6 +135,7 @@ proc genDataDecl(c: var Context): bool =
   
   nl(c)
   
+  startStack(c)
   var om3 = false
   while not peekParRi(c):
     var or4 = false
@@ -188,7 +189,8 @@ proc genDataDecl(c: var Context): bool =
       break
     else:
       om3 = true
-  if not om3: return false
+  endStack(c)
+  
   nl(c)
   
   when declared(handleDataDecl):
