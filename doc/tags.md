@@ -8,7 +8,7 @@
 | `(pat X X)`            | NifcExpr, NimonyExpr | pointer indexing operation |
 | `(par X)`              | NifcExpr, NimonyExpr, NiflerKind | syntactic parenthesis |
 | `(addr X)`; `(addr X (cppref)?)`  | NifcExpr, NimonyExpr, NiflerKind | address of operation |
-| `(nil T?)`             | NifcExpr, NimonyExpr, NiflerKind | nil pointer value |
+| `(nil T?)`             | NifcExpr, NimonyExpr, NimonyOther, NiflerKind | nil pointer value |
 | `(inf T?)`             | NifcExpr, NimonyExpr | positive infinity floating point value |
 | `(neginf T?)`          | NifcExpr, NimonyExpr | negative infinity floating point value |
 | `(nan T?)`             | NifcExpr, NimonyExpr | NaN floating point value |
@@ -81,7 +81,7 @@
 | `(keepovf X X)` | NifcStmt | keep overflow flag statement |
 | `(scope S*)` | NifcStmt, NimonyStmt | explicit scope annotation, like `stmts` |
 | `(if (elif X X)+ (else X)?)` | NifcStmt, NimonyStmt, NiflerKind | if statement header |
-| `(when (elif X X)+ (else X)?)` | NimonyStmt, NiflerKind | when statement header |
+| `(when (elif X X)+ (else X)?)` | NimonyStmt, NimonyOther, NiflerKind | when statement header |
 | `(elif X X)` | NifcOther, NimonyOther, NiflerKind | pair of (condition, action) |
 | `(else X)` | NifcOther, NimonyOther, NiflerKind | `else` action |
 | `(typevars (typevar ...)*)` | NimonyOther, NiflerKind | type variable/generic parameters |
@@ -89,13 +89,13 @@
 | `(continue)` | NimonyStmt, NiflerKind | `continue` statement |
 | `(for X ... S)` | NimonyStmt, NiflerKind | for statement |
 | `(while X S)` | NifcStmt, NimonyStmt, NiflerKind| `while` statement |
-| `(case X (of (ranges...))+ (else X)?)` | NifcStmt, NimonyStmt, NiflerKind | `case` statement |
+| `(case X (of (ranges...))+ (else X)?)` | NifcStmt, NimonyStmt, NimonyOther, NiflerKind | `case` statement |
 | `(of (ranges ...))` | NifcOther, NimonyOther, NiflerKind | `of` branch within a `case` statement |
 | `(lab D)` | NifcStmt, NifcSym | label, target of a `jmp` instruction |
 | `(jmp Y)` | NifcStmt | jump/goto instruction |
 | `(ret .X)` | NifcStmt, NimonyStmt, NiflerKind | `return` instruction |
 | `(yld .X)` | NimonyStmt, NiflerKind | yield statement |
-| `(stmts S*)` | NifcStmt, NimonyStmt, NiflerKind | list of statements |
+| `(stmts S*)` | NifcStmt, NimonyStmt, NimonyOther, NiflerKind | list of statements |
 | `(params (param...)*)` | NifcType, NimonyType, NimonyOther, NiflerKind | list of proc parameters, also used as a "proc type" |
 | `(union (fld ...)*)` | NifcType | union declaration |
 | `(object .T (fld ...)*)` | NifcType, NimonyType, NiflerKind | object type declaration |
@@ -221,7 +221,7 @@
 | `(setconstr T X*)` | NimonyExpr | set constructor |
 | `(tabconstr X*)` | NimonyExpr, NiflerKind | table constructor |
 | `(ashr T X X)` | NimonyExpr | |
-| `(oconv T X)` | NimonyExpr | object conversion |
+| `(baseobj T INTLIT X)` | NimonyExpr, NifcExpr | object conversion to base type |
 | `(hconv T X)` | NimonyExpr | hidden basic type conversion |
 | `(dconv T X)` | NimonyExpr | conversion between `distinct` types |
 | `(callstrlit X+)` | NimonyExpr, NiflerKind | |
@@ -231,10 +231,14 @@
 | `(compiles X)` | NimonyExpr | |
 | `(declared X)` | NimonyExpr | |
 | `(defined X)` | NimonyExpr | |
+| `(instanceof X T)` | NimonyExpr | only-fans operator for object privilege checking |
+| `(proccall X)` | NimonyExpr | turns method call into a proc call aka a "static" call |
 | `(high X)` | NimonyExpr | |
 | `(low X)` | NimonyExpr | |
 | `(typeof X)` | NimonyExpr, NiflerKind | |
 | `(unpack)` | NimonyExpr | |
+| `(fields T X X?)` | NimonyExpr | fields iterator |
+| `(fieldpairs T X X?)` | NimonyExpr | fieldPairs iterator |
 | `(enumtostr X)` | NimonyExpr | |
 | `(ismainmodule)` | NimonyExpr | |
 | `(defaultobj T)` | NimonyExpr | |
@@ -266,7 +270,7 @@
 | `(using (params...)+)` | NimonyStmt, NiflerKind | `using` statement |
 | `(asm X+)` | NimonyStmt, NiflerKind | `asm` statement |
 | `(defer X)` | NimonyStmt, NiflerKind | `defer` statement |
-| `(index (public ...) (private ...) (hooks ...) (converter ...) (build ...))` | NifIndexKind | index section |
+| `(index (public ...) (private ...) (hooks ...) (converter ...) (method ...) (build ...))` | NifIndexKind | index section |
 | `(public (kv Y INTLIT*)` | NifIndexKind | public section |
 | `(private (kv Y INTLIT*))` | NifIndexKind | private section |
 | `(inject)` | NimonyPragma | `inject` pragma |
@@ -278,3 +282,10 @@
 | `(sideEffect)` | NimonyPragma | explicit `sideEffect` pragma |
 | `(keepOverflowFlag)` | NimonyPragma | keep overflow flag |
 | `(semantics STR)` | NimonyPragma | proc with builtin behavior for expreval |
+| `(inheritable)` | NimonyPragma | `inheritable` pragma |
+| `(base)` | NimonyPragma | `base` pragma (currently ignored) |
+| `(pure)` | NimonyPragma | `pure` pragma (currently ignored) |
+| `(final)` | NimonyPragma | `final` pragma |
+| `(internalTypeName T)` | NimonyExpr | returns compiler's internal type name |
+| `(internalFieldPairs T X)` | NimonyExpr | variant of fieldPairs iterator returns compiler's internal field name |
+| `(failed X)` | NimonyExpr | used to access the hidden failure flag for raising calls |

@@ -57,40 +57,41 @@ proc buildSymChoiceForDot(c: var SemContext; identifier: StrId; info: PackedLine
 proc isNonOverloadable(t: SymKind): bool {.inline.} =
   t in {LetY, VarY, ParamY, TypevarY, ConstY, TypeY, ResultY, FldY, CursorY, BlockY, GletY, TletY, GvarY, TvarY}
 
-proc buildSymChoiceForSelfModule(c: var SemContext;
-                                 identifier: StrId; info: PackedLineInfo) {.used.} =
-  # not used yet
-  var count = 0
-  let oldLen = c.dest.len
-  c.dest.buildTree OchoiceX, info:
-    var it = c.currentScope
-    while it.up != nil: it = it.up
-    var nonOverloadable = 0
-    for sym in it.tab.getOrDefault(identifier):
-      # for non-overloadable symbols prefer the innermost symbol:
-      if sym.kind.isNonOverloadable:
-        inc nonOverloadable
-        if nonOverloadable == 1:
-          c.dest.addSymUse sym, info
-          inc count
-      else:
-        c.dest.addSymUse sym, info
-        inc count
-      it = it.up
-  # if the sym choice is empty, create an ident node:
-  if count == 0:
-    c.dest.shrink oldLen
-    c.dest.add identToken(identifier, info)
-
-proc buildSymChoiceForForeignModule*(c: var SemContext; importFrom: ImportedModule;
-                                     identifier: StrId; info: PackedLineInfo): int =
+proc buildSymChoiceForSelfModule*(c: var SemContext;
+                                  identifier: StrId; info: PackedLineInfo): int =
   result = 0
   let oldLen = c.dest.len
   c.dest.buildTree OchoiceX, info:
-    let candidates = importFrom.iface.getOrDefault(identifier)
-    for defId in candidates:
-      c.dest.add symToken(defId, info)
+    # add symbols from top scope:
+    var it = c.currentScope
+    while it.up != nil: it = it.up
+    for sym in it.tab.getOrDefault(identifier):
+      c.dest.addSymUse sym, info
       inc result
+  # if the sym choice is empty, create an ident node:
+  if result == 0:
+    c.dest.shrink oldLen
+    c.dest.add identToken(identifier, info)
+
+proc rawBuildSymChoiceForForeignModule(c: var SemContext; module: SymId;
+                                       identifier: StrId; info: PackedLineInfo;
+                                       marker: var HashSet[SymId]): int =
+  result = 0
+  let candidates = c.importedModules[module].iface.getOrDefault(identifier)
+  for defId in candidates:
+    if not marker.containsOrIncl(defId):
+      c.dest.add symToken(defId, info)
+    inc result
+  for forward, filter in c.importedModules[module].exports:
+    if filterAllows(filter, identifier):
+      inc result, rawBuildSymChoiceForForeignModule(c, forward, identifier, info, marker)
+
+proc buildSymChoiceForForeignModule*(c: var SemContext; module: SymId;
+                                     identifier: StrId; info: PackedLineInfo): int =
+  let oldLen = c.dest.len
+  c.dest.buildTree OchoiceX, info:
+    var marker = initHashSet[SymId]()
+    result = rawBuildSymChoiceForForeignModule(c, module, identifier, info, marker)
   # if the sym choice is empty, create an ident node:
   if result == 0:
     c.dest.shrink oldLen

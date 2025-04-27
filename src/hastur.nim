@@ -244,9 +244,11 @@ proc testFile(c: var TestCounters; file: string; overwrite: bool; cat: Category)
     if cat notin {Basics, Tracked}:
       let exe = file.generatedFile(ExeExt)
       let (testProgramOutput, testProgramExitCode) = osproc.execCmdEx(quoteShell exe)
+      var output = file.changeFileExt(".output")
       if testProgramExitCode != 0:
-        failure c, file, "test program exitcode 0", "exitcode " & $testProgramExitCode
-      let output = file.changeFileExt(".output")
+        output = file.changeFileExt(".exitcode")
+        if not output.fileExists():
+          failure c, file, "test program exitcode 0", "exitcode " & $testProgramExitCode & "\n" & testProgramOutput
       if output.fileExists():
         let outputSpec = readFile(output).strip
         let success = outputSpec == testProgramOutput.strip
@@ -300,7 +302,7 @@ proc nimonytests(overwrite: bool) =
     let cat = parseCategory x.path
     if x.kind == pcDir:
       testDir c, TestDir / x.path, overwrite, cat
-  echo c.total - c.failures, " / ", c.total, " tests successful in ", formatFloat(epochTime() - t0, precision=2), "s."
+  echo c.total - c.failures, " / ", c.total, " tests successful in ", formatFloat(epochTime() - t0, ffDecimal, precision=2), "s."
   if c.failures > 0:
     quit "FAILURE: Some tests failed."
   else:
@@ -339,7 +341,7 @@ proc controlflowTests(tool: string; overwrite: bool) =
           os.removeFile(dest)
         else:
           failure c, t, expectedOutput, destContent
-  echo c.total - c.failures, " / ", c.total, " tests successful in ", formatFloat(epochTime() - t0, precision=2), "s."
+  echo c.total - c.failures, " / ", c.total, " tests successful in ", formatFloat(epochTime() - t0, ffDecimal, precision=2), "s."
   if c.failures > 0:
     quit "FAILURE: Some tests failed."
   else:
@@ -399,8 +401,8 @@ proc record(file, test: string; flags: set[RecordFlag]; cat: Category) =
     if cat notin {Basics, Tracked}:
       let exe = file.generatedFile(ExeExt)
       let (testProgramOutput, testProgramExitCode) = osproc.execCmdEx(quoteShell exe)
-      assert testProgramExitCode == 0, "the test program had an invalid exitcode; unsupported"
-      addTestSpec test.changeFileExt(".output"), testProgramOutput
+      let ext = if testProgramExitCode != 0: ".exitcode" else: ".output"
+      addTestSpec test.changeFileExt(ext), testProgramOutput
 
     addTestCode test, file
     if {RecordCodegen, RecordAst} * flags != {}:

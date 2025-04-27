@@ -3,7 +3,7 @@
 #           NIFC Compiler
 #        (c) Copyright 2024 Andreas Rumpf
 #
-#    See the file "copying.txt", included in this
+#    See the file "license.txt", included in this
 #    distribution, for details about the copyright.
 #
 
@@ -83,13 +83,14 @@ type
 
   CurrentProc* = object
     needsOverflowFlag: bool
+    nextTemp: int
 
   GeneratedCode* = object
     m: Module
     includes: seq[Token]
     includedHeaders: IntSet
-    data: seq[Token]
     protos: seq[Token]
+    data: seq[Token]
     code: seq[Token]
     init: seq[Token]
     fileIds: PackedSet[FileId]
@@ -698,8 +699,9 @@ proc generateCode*(s: var State, inp, outp: string; flags: set[GenFlag]) =
   if optLineDir in c.m.config.options:
     writeLineDir f, c
   writeTokenSeq f, typeDecls, c
-  writeTokenSeq f, c.data, c
+  # so that v-tables can be generated protos must be written before data:
   writeTokenSeq f, c.protos, c
+  writeTokenSeq f, c.data, c
   writeTokenSeq f, c.code, c
 
   if gfProducesMainProc in c.flags:

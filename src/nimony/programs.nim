@@ -41,6 +41,9 @@ proc suffixToNif*(suffix: string): string {.inline.} =
   # always imported from semchecked files
   prog.dir / suffix & ".2.nif"
 
+proc customToNif*(suffix: string): string {.inline.} =
+  prog.dir / suffix & ".nif"
+
 proc needsRecompile*(dep, output: string): bool =
   result = not fileExists(output) or getLastModificationTime(output) < getLastModificationTime(dep)
 
@@ -56,7 +59,7 @@ proc load(suffix: string): NifModule =
   else:
     result = prog.mods[suffix]
 
-proc mergeFilter(f: var ImportFilter; g: ImportFilter) =
+proc mergeFilter*(f: var ImportFilter; g: ImportFilter) =
   # applies filter f to filter g, commutative since it computes the intersection
   case g.kind
   of ImportAll: discard
@@ -76,6 +79,12 @@ proc mergeFilter(f: var ImportFilter; g: ImportFilter) =
       f.list.excl(exc)
     of FromImport:
       f.list = intersection(f.list, g.list)
+
+proc filterAllows*(f: ImportFilter; name: StrId): bool =
+  case f.kind
+  of ImportAll: result = true
+  of ImportExcept: result = name notin f.list
+  of FromImport: result = name in f.list
 
 proc loadInterface*(suffix: string; iface: var Iface;
                     module: SymId; importTab: var OrderedTable[StrId, seq[SymId]];
@@ -188,6 +197,16 @@ proc tryLoadAllHooks*(typ: SymId): HooksPerType =
     var m = load(modname)
     if m.index.hooks.hasKey(typ):
       result = m.index.hooks[typ]
+
+proc loadVTable*(typ: SymId): seq[MethodIndexEntry] =
+  let nifName = pool.syms[typ]
+  let modname = extractModule(nifName)
+  if modname != "":
+    var m = load(modname)
+    for entry in m.index.classes:
+      if entry.cls == typ:
+        return entry.methods
+  return @[]
 
 proc registerHook*(suffix: string; typ: SymId; op: AttachedOp; hook: SymId; isGeneric: bool) =
   let m: NifModule

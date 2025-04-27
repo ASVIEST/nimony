@@ -3,7 +3,7 @@
 #           Hexer Compiler
 #        (c) Copyright 2025 Andreas Rumpf
 #
-#    See the file "copying.txt", included in this
+#    See the file "license.txt", included in this
 #    distribution, for details about the copyright.
 #
 
@@ -31,8 +31,8 @@ It follows that we're only interested in Call expressions here, or similar
 
 import std / [assertions]
 include nifprelude
-import nifindexes, symparser, treemangler, lifter, mover, hexer_context, typekeys
-import ".." / nimony / [nimony_model, programs, decls, typenav, renderer, reporters, builtintypes]
+import nifindexes, symparser, treemangler, lifter, mover, hexer_context
+import ".." / nimony / [nimony_model, programs, decls, typenav, renderer, reporters, builtintypes, typekeys]
 
 type
   Context = object
@@ -90,9 +90,13 @@ proc constructsValue*(n: Cursor): bool =
   var n = n
   while true:
     case n.exprKind
-    of CastX, ConvX, HconvX, DconvX, OconvX:
+    of CastX, ConvX, HconvX, DconvX:
       inc n
       skip n
+    of BaseobjX:
+      inc n
+      skip n
+      skip n # skip intlit
     of ExprX:
       inc n
       while not isLastSon(n): skip n
@@ -157,12 +161,62 @@ proc isResultUsage(c: Context; n: Cursor): bool {.inline.} =
   if n.kind == Symbol:
     result = n.symId == c.resultSym
 
-proc trReturn(c: var Context; n: var Cursor) =
-  copyInto c.dest, n:
-    if isResultUsage(c, n):
-      takeTree c.dest, n
+proc isSimpleExpression(n: var Cursor): bool =
+  ## expressions that can be returned safely
+  case n.kind
+  of Symbol, UIntLit, StringLit, IntLit, FloatLit, CharLit, DotToken, Ident:
+    result = true
+    inc n
+  of ParLe:
+    case n.exprKind
+    of FalseX, TrueX, InfX, NegInfX, NanX, NilX, SufX:
+      result = true
+      skip n
+    of CastX, ConvX, HconvX, DconvX:
+      result = true
+      inc n
+      skip n # type
+      while n.kind != ParRi:
+        if not isSimpleExpression(n): return false
+      skipParRi n
+    of ExprX:
+      inc n
+      var inner = n
+      skip n
+      if n.kind == ParRi:
+        result = isSimpleExpression(inner)
+        skipParRi n
+      else:
+        result = false
     else:
+      result = false
+      skip n
+  of ParRi, SymbolDef, UnknownToken, EofToken:
+    result = false
+    inc n
+
+proc trReturn(c: var Context; n: var Cursor) =
+  let retVal = n.firstSon
+  var exp = retVal
+  if isResultUsage(c, retVal):
+    takeTree c.dest, n
+  elif isSimpleExpression(exp) or c.resultSym == NoSymId:
+    # simple enough:
+    copyInto(c.dest, n):
       tr c, n, WantOwner
+  else:
+    let info = n.info
+    inc n # skip ParLe
+    c.dest.addParLe StmtsS, info
+    c.dest.addParLe AsgnS, info
+    c.dest.add symToken(c.resultSym, info)
+    tr c, n, WantOwner
+    c.dest.addParRi() # end of AsgnS
+    c.dest.addParLe(RetS, info)
+    c.dest.add symToken(c.resultSym, info)
+    c.dest.addParRi() # end of RetS
+    c.dest.addParRi() # end of StmtsS
+    skipParRi(n) # skip ParRi
 
 proc evalLeftHandSide(c: var Context; le: var Cursor): TokenBuf =
   result = createTokenBuf(10)
@@ -385,7 +439,12 @@ proc trExplicitCopy(c: var Context; n: var Cursor; op: AttachedOp) =
   else:
     c.dest.addParLe AsgnS, info
     inc n
-    tr c, n, DontCare
+    if n.exprKind == HaddrX:
+      inc n
+      tr c, n, DontCare
+      skipParRi(n)
+    else:
+      tr c, n, DontCare
     tr c, n, DontCare
     takeParRi c.dest, n
 
@@ -578,7 +637,8 @@ proc trRawConstructor(c: var Context; n: var Cursor; e: Expects) =
 proc trConvExpr(c: var Context; n: var Cursor; e: Expects) =
   copyInto c.dest, n:
     takeTree c.dest, n # type
-    tr c, n, e
+    while n.kind != ParRi:
+      tr c, n, e
 
 proc trObjConstr(c: var Context; n: var Cursor; e: Expects) =
   var ow = owningTempDefault()
@@ -670,6 +730,14 @@ proc genLastRead(c: var Context; n: var Cursor; typ: Cursor) =
   c.dest.copyIntoSymUse ow.s, ow.info
   c.dest.addParRi() # finish the StmtListExpr
 
+proc trLocationNonOwner(c: var Context; n: var Cursor) =
+  c.dest.add n
+  inc n
+  tr c, n, WantNonOwner
+  while n.kind != ParRi:
+    tr(c, n, DontCare)
+  takeParRi c.dest, n
+
 proc trLocation(c: var Context; n: var Cursor; e: Expects) =
   # `x` does not own its value as it can be read multiple times.
   let typ = getType(c.typeCache, n)
@@ -686,15 +754,15 @@ proc trLocation(c: var Context; n: var Cursor; e: Expects) =
           if isAtom(n):
             takeTree c.dest, n
           else:
-            trSons c, n, DontCare
+            trLocationNonOwner c, n
       elif isAtom(n):
         takeTree c.dest, n
       else:
-        trSons c, n, DontCare
+        trLocationNonOwner c, n
   elif isAtom(n):
     takeTree c.dest, n
   else:
-    trSons c, n, DontCare
+    trLocationNonOwner c, n
 
 proc trValue(c: var Context; n: Cursor; e: Expects) =
   var n = n
@@ -824,7 +892,7 @@ proc tr(c: var Context; n: var Cursor; e: Expects) =
       trExplicitCopy c, n, attachedSink
     of TraceX:
       trExplicitTrace c, n
-    of ConvKinds, SufX:
+    of ConvKinds, BaseobjX, SufX:
       trConvExpr c, n, e
     of OconstrX:
       trObjConstr c, n, e
@@ -834,7 +902,7 @@ proc tr(c: var Context; n: var Cursor; e: Expects) =
       trNewobj c, n, e, NewrefX
     of DotX, AtX, ArrAtX, PatX, TupatX:
       trLocation c, n, e
-    of ParX:
+    of ParX, ProccallX:
       trSons c, n, e
     of ExprX:
       trStmtListExpr c, n, e
@@ -847,8 +915,8 @@ proc tr(c: var Context; n: var Cursor; e: Expects) =
        AddX, SubX, MulX, DivX, ModX, ShrX, ShlX, AshrX, BitandX, BitorX, BitxorX, BitnotX,
        PlusSetX, MinusSetX, MulSetX, XorSetX, EqSetX, LeSetX, LtSetX, InSetX, CardX,
        EqX, NeqX, LeX, LtX, InfX, NegInfX, NanX, CompilesX, DeclaredX,
-       DefinedX, HighX, LowX, TypeofX, UnpackX, EnumtostrX, IsmainmoduleX, QuotedX,
-       AddrX, HaddrX, AlignofX, OffsetofX, ErrX, OvfX:
+       DefinedX, HighX, LowX, TypeofX, UnpackX, FieldsX, FieldpairsX, EnumtostrX, IsmainmoduleX, QuotedX,
+       AddrX, HaddrX, AlignofX, OffsetofX, ErrX, OvfX, InstanceofX, InternalTypeNameX, InternalFieldPairsX:
       trSons c, n, WantNonOwner
     of DerefX, HderefX:
       trDeref c, n
@@ -856,7 +924,7 @@ proc tr(c: var Context; n: var Cursor; e: Expects) =
       raiseAssert "nodekind should have been eliminated in desugar.nim"
     of DefaultobjX, DefaulttupX, BracketX, CurlyX, TupX:
       raiseAssert "nodekind should have been eliminated in sem.nim"
-    of PragmaxX, CurlyatX, TabconstrX, DoX:
+    of PragmaxX, CurlyatX, TabconstrX, DoX, FailedX:
       trSons c, n, e
     of NoExpr:
       let k = n.stmtKind

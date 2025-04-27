@@ -33,6 +33,7 @@ type
   ImportedModule* = object
     path*: string
     iface*: Iface
+    exports*: Table[SymId, ImportFilter]
 
   InstRequest* = object
     origin*: SymId
@@ -79,6 +80,7 @@ type
       ## syms of type instantiations to add their declarations to module
     includeStack*: seq[string]
     importedModules*: Table[SymId, ImportedModule]
+    selfModuleSym*: SymId
     instantiatedFrom*: seq[PackedLineInfo]
     importTab*: OrderedTable[StrId, seq[SymId]] ## mapping of identifiers to modules containing the identifier
     globals*, locals*: Table[string, int]
@@ -100,11 +102,14 @@ type
     hookIndexLog*: array[AttachedOp, seq[HookIndexEntry]] # only a log, used for index generation, but is not read from.
     converters*: Table[SymId, seq[SymId]]
     converterIndexMap*: seq[(SymId, SymId)]
+    methods*: Table[SymId, seq[SymId]]
+    classIndexMap*: seq[ClassIndexEntry]
     exports*: OrderedTable[SymId, ImportFilter] # module syms to export filter
     freshSyms*: HashSet[SymId] ## symdefs that should count as new for semchecking
     toBuild*: TokenBuf
     unoverloadableMagics*: HashSet[StrId]
     debugAllowErrors*: bool
+    pending*: TokenBuf
 
 proc typeToCanon*(buf: TokenBuf; start: int): string =
   result = ""

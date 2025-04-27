@@ -66,7 +66,7 @@ type
     SetconstrX = (ord(SetconstrTagId), "setconstr")  ## set constructor
     TabconstrX = (ord(TabconstrTagId), "tabconstr")  ## table constructor
     AshrX = (ord(AshrTagId), "ashr")
-    OconvX = (ord(OconvTagId), "oconv")  ## object conversion
+    BaseobjX = (ord(BaseobjTagId), "baseobj")  ## object conversion to base type
     HconvX = (ord(HconvTagId), "hconv")  ## hidden basic type conversion
     DconvX = (ord(DconvTagId), "dconv")  ## conversion between `distinct` types
     CallstrlitX = (ord(CallstrlitTagId), "callstrlit")
@@ -76,10 +76,14 @@ type
     CompilesX = (ord(CompilesTagId), "compiles")
     DeclaredX = (ord(DeclaredTagId), "declared")
     DefinedX = (ord(DefinedTagId), "defined")
+    InstanceofX = (ord(InstanceofTagId), "instanceof")  ## only-fans operator for object privilege checking
+    ProccallX = (ord(ProccallTagId), "proccall")  ## turns method call into a proc call aka a "static" call
     HighX = (ord(HighTagId), "high")
     LowX = (ord(LowTagId), "low")
     TypeofX = (ord(TypeofTagId), "typeof")
     UnpackX = (ord(UnpackTagId), "unpack")
+    FieldsX = (ord(FieldsTagId), "fields")  ## fields iterator
+    FieldpairsX = (ord(FieldpairsTagId), "fieldpairs")  ## fieldPairs iterator
     EnumtostrX = (ord(EnumtostrTagId), "enumtostr")
     IsmainmoduleX = (ord(IsmainmoduleTagId), "ismainmodule")
     DefaultobjX = (ord(DefaultobjTagId), "defaultobj")
@@ -104,9 +108,12 @@ type
     WasmovedX = (ord(WasmovedTagId), "wasmoved")
     SinkhX = (ord(SinkhTagId), "sinkh")
     TraceX = (ord(TraceTagId), "trace")
+    InternalTypeNameX = (ord(InternalTypeNameTagId), "internalTypeName")  ## returns compiler's internal type name
+    InternalFieldPairsX = (ord(InternalFieldPairsTagId), "internalFieldPairs")  ## variant of fieldPairs iterator returns compiler's internal field name
+    FailedX = (ord(FailedTagId), "failed")  ## used to access the hidden failure flag for raising calls
 
 proc rawTagIsNimonyExpr*(raw: TagEnum): bool {.inline.} =
-  raw in {ErrTagId, SufTagId, AtTagId, DerefTagId, DotTagId, PatTagId, ParTagId, AddrTagId, NilTagId, InfTagId, NeginfTagId, NanTagId, FalseTagId, TrueTagId, AndTagId, OrTagId, XorTagId, NotTagId, NegTagId, SizeofTagId, AlignofTagId, OffsetofTagId, OconstrTagId, AconstrTagId, BracketTagId, CurlyTagId, CurlyatTagId, OvfTagId, AddTagId, SubTagId, MulTagId, DivTagId, ModTagId, ShrTagId, ShlTagId, BitandTagId, BitorTagId, BitxorTagId, BitnotTagId, EqTagId, NeqTagId, LeTagId, LtTagId, CastTagId, ConvTagId, CallTagId, CmdTagId, CchoiceTagId, OchoiceTagId, PragmaxTagId, QuotedTagId, HderefTagId, DdotTagId, HaddrTagId, NewrefTagId, NewobjTagId, TupTagId, TupconstrTagId, SetconstrTagId, TabconstrTagId, AshrTagId, OconvTagId, HconvTagId, DconvTagId, CallstrlitTagId, InfixTagId, PrefixTagId, HcallTagId, CompilesTagId, DeclaredTagId, DefinedTagId, HighTagId, LowTagId, TypeofTagId, UnpackTagId, EnumtostrTagId, IsmainmoduleTagId, DefaultobjTagId, DefaulttupTagId, ExprTagId, DoTagId, ArratTagId, TupatTagId, PlussetTagId, MinussetTagId, MulsetTagId, XorsetTagId, EqsetTagId, LesetTagId, LtsetTagId, InsetTagId, CardTagId, EmoveTagId, DestroyTagId, DupTagId, CopyTagId, WasmovedTagId, SinkhTagId, TraceTagId}
+  raw in {ErrTagId, SufTagId, AtTagId, DerefTagId, DotTagId, PatTagId, ParTagId, AddrTagId, NilTagId, InfTagId, NeginfTagId, NanTagId, FalseTagId, TrueTagId, AndTagId, OrTagId, XorTagId, NotTagId, NegTagId, SizeofTagId, AlignofTagId, OffsetofTagId, OconstrTagId, AconstrTagId, BracketTagId, CurlyTagId, CurlyatTagId, OvfTagId, AddTagId, SubTagId, MulTagId, DivTagId, ModTagId, ShrTagId, ShlTagId, BitandTagId, BitorTagId, BitxorTagId, BitnotTagId, EqTagId, NeqTagId, LeTagId, LtTagId, CastTagId, ConvTagId, CallTagId, CmdTagId, CchoiceTagId, OchoiceTagId, PragmaxTagId, QuotedTagId, HderefTagId, DdotTagId, HaddrTagId, NewrefTagId, NewobjTagId, TupTagId, TupconstrTagId, SetconstrTagId, TabconstrTagId, AshrTagId, BaseobjTagId, HconvTagId, DconvTagId, CallstrlitTagId, InfixTagId, PrefixTagId, HcallTagId, CompilesTagId, DeclaredTagId, DefinedTagId, InstanceofTagId, ProccallTagId, HighTagId, LowTagId, TypeofTagId, UnpackTagId, FieldsTagId, FieldpairsTagId, EnumtostrTagId, IsmainmoduleTagId, DefaultobjTagId, DefaulttupTagId, ExprTagId, DoTagId, ArratTagId, TupatTagId, PlussetTagId, MinussetTagId, MulsetTagId, XorsetTagId, EqsetTagId, LesetTagId, LtsetTagId, InsetTagId, CardTagId, EmoveTagId, DestroyTagId, DupTagId, CopyTagId, WasmovedTagId, SinkhTagId, TraceTagId, InternalTypeNameTagId, InternalFieldPairsTagId, FailedTagId}
 
 type
   NimonyStmt* = enum
@@ -224,6 +231,7 @@ proc rawTagIsNimonyType*(raw: TagEnum): bool {.inline.} =
 type
   NimonyOther* = enum
     NoSub
+    NilU = (ord(NilTagId), "nil")  ## nil pointer value
     KvU = (ord(KvTagId), "kv")  ## key-value pair
     VvU = (ord(VvTagId), "vv")  ## value-value pair (used for explicitly named arguments in function calls)
     RangeU = (ord(RangeTagId), "range")  ## `(range a b)` construct
@@ -232,10 +240,13 @@ type
     TypevarU = (ord(TypevarTagId), "typevar")  ## type variable declaration
     EfldU = (ord(EfldTagId), "efld")  ## enum field declaration
     FldU = (ord(FldTagId), "fld")  ## field declaration
+    WhenU = (ord(WhenTagId), "when")  ## when statement header
     ElifU = (ord(ElifTagId), "elif")  ## pair of (condition, action)
     ElseU = (ord(ElseTagId), "else")  ## `else` action
     TypevarsU = (ord(TypevarsTagId), "typevars")  ## type variable/generic parameters
+    CaseU = (ord(CaseTagId), "case")  ## `case` statement
     OfU = (ord(OfTagId), "of")  ## `of` branch within a `case` statement
+    StmtsU = (ord(StmtsTagId), "stmts")  ## list of statements
     ParamsU = (ord(ParamsTagId), "params")  ## list of proc parameters, also used as a "proc type"
     PragmasU = (ord(PragmasTagId), "pragmas")  ## begin of pragma section
     UnpackflatU = (ord(UnpackflatTagId), "unpackflat")  ## unpack into flat variable list
@@ -244,7 +255,7 @@ type
     FinU = (ord(FinTagId), "fin")  ## finally subsection
 
 proc rawTagIsNimonyOther*(raw: TagEnum): bool {.inline.} =
-  raw in {KvTagId, VvTagId, RangeTagId, RangesTagId, ParamTagId, TypevarTagId, EfldTagId, FldTagId, ElifTagId, ElseTagId, TypevarsTagId, OfTagId, ParamsTagId, PragmasTagId, UnpackflatTagId, UnpacktupTagId, ExceptTagId, FinTagId}
+  raw in {NilTagId, KvTagId, VvTagId, RangeTagId, RangesTagId, ParamTagId, TypevarTagId, EfldTagId, FldTagId, WhenTagId, ElifTagId, ElseTagId, TypevarsTagId, CaseTagId, OfTagId, StmtsTagId, ParamsTagId, PragmasTagId, UnpackflatTagId, UnpacktupTagId, ExceptTagId, FinTagId}
 
 type
   NimonyPragma* = enum
@@ -291,9 +302,13 @@ type
     SideEffectP = (ord(SideEffectTagId), "sideEffect")  ## explicit `sideEffect` pragma
     KeepOverflowFlagP = (ord(KeepOverflowFlagTagId), "keepOverflowFlag")  ## keep overflow flag
     SemanticsP = (ord(SemanticsTagId), "semantics")  ## proc with builtin behavior for expreval
+    InheritableP = (ord(InheritableTagId), "inheritable")  ## `inheritable` pragma
+    BaseP = (ord(BaseTagId), "base")  ## `base` pragma (currently ignored)
+    PureP = (ord(PureTagId), "pure")  ## `pure` pragma (currently ignored)
+    FinalP = (ord(FinalTagId), "final")  ## `final` pragma
 
 proc rawTagIsNimonyPragma*(raw: TagEnum): bool {.inline.} =
-  raw in {EmitTagId, InlineTagId, NoinlineTagId, VarargsTagId, SelectanyTagId, AlignTagId, BitsTagId, NodeclTagId, RaisesTagId, UntypedTagId, MagicTagId, ImportcTagId, ImportcppTagId, ExportcTagId, HeaderTagId, ThreadvarTagId, GlobalTagId, DiscardableTagId, NoreturnTagId, BorrowTagId, NoSideEffectTagId, NodestroyTagId, PluginTagId, BycopyTagId, ByrefTagId, NoinitTagId, RequiresTagId, EnsuresTagId, AssumeTagId, AssertTagId, BuildTagId, StringTagId, ViewTagId, InjectTagId, GensymTagId, ErrorTagId, ReportTagId, TagsTagId, DeprecatedTagId, SideEffectTagId, KeepOverflowFlagTagId, SemanticsTagId}
+  raw in {EmitTagId, InlineTagId, NoinlineTagId, VarargsTagId, SelectanyTagId, AlignTagId, BitsTagId, NodeclTagId, RaisesTagId, UntypedTagId, MagicTagId, ImportcTagId, ImportcppTagId, ExportcTagId, HeaderTagId, ThreadvarTagId, GlobalTagId, DiscardableTagId, NoreturnTagId, BorrowTagId, NoSideEffectTagId, NodestroyTagId, PluginTagId, BycopyTagId, ByrefTagId, NoinitTagId, RequiresTagId, EnsuresTagId, AssumeTagId, AssertTagId, BuildTagId, StringTagId, ViewTagId, InjectTagId, GensymTagId, ErrorTagId, ReportTagId, TagsTagId, DeprecatedTagId, SideEffectTagId, KeepOverflowFlagTagId, SemanticsTagId, InheritableTagId, BaseTagId, PureTagId, FinalTagId}
 
 type
   NimonySym* = enum

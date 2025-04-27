@@ -479,12 +479,12 @@ proc semTemplBody*(c: var UntypedCtx; n: var Cursor) =
       of ForS:
         takeToken c.c[], n
         openScope c
+        semTemplBody c, n
         case n.substructureKind
         of UnpackFlatU, UnpackTupU:
           semTemplBodySons c, n
         else:
           error "illformed AST", n
-        semTemplBody c, n
         openScope c
         semTemplBody c, n
         closeScope c
@@ -537,6 +537,9 @@ proc semTemplBody*(c: var UntypedCtx; n: var Cursor) =
       inc c.noGenSym
       semTemplBody c, n
       dec c.noGenSym
+      if n.kind != ParRi:
+        # annoying inheritance depth:
+        takeTree c.c[], n
       takeParRi c.c[], n
     of QuotedX:
       let ident = getIdent(n)

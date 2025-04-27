@@ -3,7 +3,7 @@
 #           Hexer Compiler
 #        (c) Copyright 2025 Andreas Rumpf
 #
-#    See the file "copying.txt", included in this
+#    See the file "license.txt", included in this
 #    distribution, for details about the copyright.
 #
 
@@ -36,6 +36,7 @@ proc isComplex(n: Cursor): bool =
         else:
           # More than one son is always complex:
           return true
+        inc nested
       else:
         inc n
         inc nested
@@ -189,14 +190,16 @@ proc trIf(c: var Context; dest: var TokenBuf; n: var Cursor; tar: var Target) =
         dest.add t0
         #copyIntoKind dest, StmtsS, info:
         if tar.m != IsIgnored:
-          trExprInto c, dest, n, tmp
+          copyIntoKind dest, StmtsS, info:
+            trExprInto c, dest, n, tmp
         else:
           trStmt c, dest, n
       skipParRi n
     of ElseU:
       inc n
       if tar.m != IsIgnored:
-        trExprInto c, dest, n, tmp
+        copyIntoKind dest, StmtsS, info:
+          trExprInto c, dest, n, tmp
       else:
         trStmt c, dest, n
       skipParRi n
@@ -230,13 +233,15 @@ proc trCase(c: var Context; dest: var TokenBuf; n: var Cursor; tar: var Target) 
       copyInto(dest, n):
         takeTree dest, n # choices
         if tar.m != IsIgnored:
-          trExprInto c, dest, n, tmp
+          copyIntoKind dest, StmtsS, info:
+            trExprInto c, dest, n, tmp
         else:
           trStmt c, dest, n
     of ElseU:
       copyInto(dest, n):
         if tar.m != IsIgnored:
-          trExprInto c, dest, n, tmp
+          copyIntoKind dest, StmtsS, info:
+            trExprInto c, dest, n, tmp
         else:
           trStmt c, dest, n
     else:
@@ -255,7 +260,8 @@ proc trTry(c: var Context; dest: var TokenBuf; n: var Cursor; tar: var Target) =
 
   copyInto(dest, n):
     if tar.m != IsIgnored:
-      trExprInto c, dest, n, tmp
+      copyIntoKind dest, StmtsS, info:
+        trExprInto c, dest, n, tmp
     else:
       trStmt c, dest, n
 
@@ -265,7 +271,8 @@ proc trTry(c: var Context; dest: var TokenBuf; n: var Cursor; tar: var Target) =
         copyInto(dest, n):
           takeTree dest, n # declarations
           if tar.m != IsIgnored:
-            trExprInto c, dest, n, tmp
+            copyIntoKind dest, StmtsS, info:
+              trExprInto c, dest, n, tmp
           else:
             trStmt c, dest, n
       of FinU:
@@ -334,12 +341,14 @@ proc trBlock(c: var Context; dest: var TokenBuf; n: var Cursor; tar: var Target)
   copyInto(dest, n):
     takeTree dest, n # label or DotToken
     if tar.m != IsIgnored:
-      trExprInto c, dest, n, tmp
+      copyIntoKind dest, StmtsS, n.info:
+        trExprInto c, dest, n, tmp
     else:
       trStmt c, dest, n
 
-  #if tar.m != IsIgnored:
-  #  tar.t.addSymUse tmp, info
+
+  if tar.m != IsIgnored:
+    tar.t.addSymUse tmp, n.info
 
 proc trStmt(c: var Context; dest: var TokenBuf; n: var Cursor) =
   case n.stmtKind

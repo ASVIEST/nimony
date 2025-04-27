@@ -3,7 +3,7 @@
 #           Nimony
 #        (c) Copyright 2024 Andreas Rumpf
 #
-#    See the file "copying.txt", included in this
+#    See the file "license.txt", included in this
 #    distribution, for details about the copyright.
 #
 
@@ -13,7 +13,20 @@ import std/assertions
 include nifprelude
 
 import std/tables
+from std/strutils import endsWith
 import nimony_model, builtintypes, decls, programs
+
+const
+  RcField* = "r.0."
+  DataField* = "d.0."
+  VTableField* = "vt.0"
+  DisplayLenField* = "dl.0."
+  DisplayField* = "dy.0."
+  MethodsField* = "mt.0."
+  GeneratedTypeSuffix* = ".0.t"
+
+proc isGeneratedType*(s: string): bool =
+  result = endsWith(s, GeneratedTypeSuffix)
 
 type
   LocalInfo* = object
@@ -251,36 +264,55 @@ proc getTypeImpl(c: var TypeCache; n: Cursor; flags: set[GetTypeFlag]): Cursor =
       inc result # dot token
       skip result # parameters
   of FalseX, TrueX, AndX, OrX, XorX, NotX, DefinedX, DeclaredX, IsmainmoduleX, EqX, NeqX, LeX, LtX,
-     EqsetX, LesetX, LtsetX, InsetX, OvfX, CompilesX:
+     EqsetX, LesetX, LtsetX, InsetX, OvfX, CompilesX, InstanceofX, FailedX:
     result = c.builtins.boolType
   of NegX, NegInfX, NanX, InfX:
     result = c.builtins.floatType
-  of EnumToStrX, DefaultObjX, DefaultTupX:
+  of EnumToStrX, DefaultObjX, DefaultTupX, InternalTypeNameX:
     result = c.builtins.stringType
   of SizeofX, CardX, AlignofX, OffsetofX:
     result = c.builtins.intType
   of AddX, SubX, MulX, DivX, ModX, ShlX, ShrX, AshrX, BitandX, BitorX, BitxorX, BitnotX,
      PlusSetX, MinusSetX, MulSetX, XorSetX,
-     CastX, ConvX, OconvX, HconvX, DconvX,
+     CastX, ConvX, HconvX, DconvX, BaseobjX,
      OconstrX, NewobjX, AconstrX, SetConstrX, TupConstrX, NewrefX:
     result = n.firstSon
-  of ParX, EmoveX:
+  of ParX, EmoveX, ProccallX:
     result = getTypeImpl(c, n.firstSon, flags)
   of NilX:
     result = c.builtins.nilType
   of DotX, DdotX:
     result = n
     inc result # skip "dot"
+    var obj = result
     skip result # obj
-    result = getTypeImpl(c, result, flags) # typeof(obj.field) == typeof field
+    # typeof(obj.field) == typeof field
+    if result.kind == Symbol:
+      let s = result.symId
+      result = lookupSymbol(c, s)
+      if cursorIsNil(result):
+        if pool.syms[s] == DataField and
+            obj.exprKind in {DerefX, HderefX}:
+          inc obj
+          let typ = getTypeImpl(c, obj, flags)
+          if typ.typeKind == RefT:
+            result = typ
+            inc result
+        if cursorIsNil(result):
+          when defined(debug):
+            writeStackTrace()
+          quit "could not find symbol: " & pool.syms[s]
+    else:
+      result = getTypeImpl(c, result, flags)
   of DerefX, HderefX:
     result = getTypeImpl(c, n.firstSon, flags)
-    if typeKind(result) in {RefT, PtrT, MutT, OutT}:
+    if typeKind(result) in {RefT, PtrT, MutT, OutT, LentT}:
       inc result
     else:
       assert false, "cannot deref type: " & toString(result, false)
       result = c.builtins.autoType # still an error
-  of QuotedX, OchoiceX, CchoiceX, UnpackX, TypeofX, LowX, HighX, ErrX:
+  of QuotedX, OchoiceX, CchoiceX, UnpackX, FieldsX, FieldpairsX, TypeofX, LowX, HighX, ErrX,
+     InternalFieldPairsX:
     discard "keep the error type"
   of AddrX, HaddrX:
     let elemType = getTypeImpl(c, n.firstSon, flags)

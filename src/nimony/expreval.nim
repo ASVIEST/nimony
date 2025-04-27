@@ -9,7 +9,7 @@
 import std / assertions
 
 include nifprelude
-import nimony_model, decls, programs, xints, semdata, renderer, builtintypes
+import nimony_model, decls, programs, xints, semdata, renderer, builtintypes, typeprops
 
 type
   EvalContext* = object
@@ -245,10 +245,10 @@ proc eval*(c: var EvalContext; n: var Cursor): Cursor =
       var local = asLocal(sym.decl)
       case local.kind
       of ConstY:
-        return local.val
+        return eval(c, local.val)
       of EfldY:
         inc local.val # takes the first counter field
-        return local.val
+        return eval(c, local.val)
       else: discard
     error "cannot evaluate symbol at compile time: " & pool.syms[symId], info
   of StringLit, CharLit, IntLit, UIntLit, FloatLit:
@@ -312,7 +312,8 @@ proc eval*(c: var EvalContext; n: var Cursor): Cursor =
     of ConvX, HconvX:
       let nOrig = n
       inc n
-      let typ = n
+      var isDistinct = false
+      var typ = skipDistinct(n, isDistinct)
       skip n
       let val = propagateError eval(c, n)
       skipParRi n

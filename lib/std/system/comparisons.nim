@@ -3,8 +3,10 @@
 # not in original nim, so that it works for generic `Ordinal` types:
 proc `==`*[T: Ordinal](x, y: T): bool {.magic: "LeI", noSideEffect.}
 
-proc `==`*[Enum: enum](x, y: Enum): bool {.magic: "EqEnum", noSideEffect.}
+# `enum` typeclass split here to prevent ambiguity with `Ordinal`:
+proc `==`*[Enum: OrdinalEnum](x, y: Enum): bool {.magic: "EqEnum", noSideEffect.}
   ## Checks whether values within the *same enum* have the same underlying value.
+proc `==`*[Enum: HoleyEnum](x, y: Enum): bool {.magic: "EqEnum", noSideEffect.}
 
 proc `==`*(x, y: pointer): bool {.magic: "EqRef", noSideEffect.}
   ## Checks for equality between two `pointer` variables.
@@ -24,7 +26,9 @@ proc `==`*[T](x, y: ptr T): bool {.magic: "EqRef", noSideEffect.}
 # not in original nim, so that it works for generic `Ordinal` types:
 proc `<=`*[T: Ordinal](x, y: T): bool {.magic: "LeI", noSideEffect.}
 
-proc `<=`*[Enum: enum](x, y: Enum): bool {.magic: "LeEnum", noSideEffect.}
+# `enum` typeclass split here to prevent ambiguity with `Ordinal`:
+proc `<=`*[Enum: OrdinalEnum](x, y: Enum): bool {.magic: "LeEnum", noSideEffect.}
+proc `<=`*[Enum: HoleyEnum](x, y: Enum): bool {.magic: "LeEnum", noSideEffect.}
 
 proc `<=`*(x, y: char): bool {.magic: "LeCh", noSideEffect.}
   ## Compares two chars and returns true if `x` is lexicographically
@@ -43,7 +47,9 @@ proc `<=`*(x, y: pointer): bool {.magic: "LePtr", noSideEffect.}
 # not in original nim, so that it works for generic `Ordinal` types:
 proc `<`*[T: Ordinal](x, y: T): bool {.magic: "LtI", noSideEffect.}
 
-proc `<`*[Enum: enum](x, y: Enum): bool {.magic: "LtEnum", noSideEffect.}
+# `enum` typeclass split here to prevent ambiguity with `Ordinal`:
+proc `<`*[Enum: OrdinalEnum](x, y: Enum): bool {.magic: "LtEnum", noSideEffect.}
+proc `<`*[Enum: HoleyEnum](x, y: Enum): bool {.magic: "LtEnum", noSideEffect.}
 
 proc `<`*(x, y: char): bool {.magic: "LtCh", noSideEffect.}
   ## Compares two chars and returns true if `x` is lexicographically
@@ -106,6 +112,9 @@ template `>`*(x, y: untyped): untyped =
   ## "is greater" operator. This is the same as `y < x`.
   y < x
 
+type Orderable = concept
+  proc `<=`(x, y: Self): bool
+
 proc min*(x, y: int8): int8 {.noSideEffect, inline.} =
   if x <= y: x else: y
 proc min*(x, y: int16): int16 {.noSideEffect, inline.} =
@@ -119,6 +128,10 @@ proc min*(x, y: float32): float32 {.noSideEffect, inline.} =
   if x <= y or y != y: x else: y
 proc min*(x, y: float): float {.noSideEffect, inline.} =
   if x <= y or y != y: x else: y
+# originally used T: not SomeFloat:
+proc min*[T: Orderable](x, y: T): T {.inline.} =
+  ## Generic minimum operator of 2 values based on `<=`.
+  if x <= y: x else: y
 
 proc max*(x, y: int8): int8 {.noSideEffect, inline.} =
   if y <= x: x else: y
@@ -133,6 +146,10 @@ proc max*(x, y: float32): float32 {.noSideEffect, inline.} =
   if y <= x or y != y: x else: y
 proc max*(x, y: float): float {.noSideEffect, inline.} =
   if y <= x or y != y: x else: y
+# originally used T: not SomeFloat:
+proc max*[T: Orderable](x, y: T): T {.inline.} =
+  ## Generic maximum operator of 2 values based on `<=`.
+  if y <= x: x else: y
 
 type
   Comparable* = concept

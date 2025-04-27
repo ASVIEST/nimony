@@ -3,7 +3,7 @@
 #           Hexer Compiler
 #        (c) Copyright 2024 Andreas Rumpf
 #
-#    See the file "copying.txt", included in this
+#    See the file "license.txt", included in this
 #    distribution, for details about the copyright.
 #
 
@@ -11,9 +11,9 @@ import std / [hashes, os, tables, sets, assertions]
 
 include nifprelude
 import symparser
-import typekeys
 import ".." / models / tags
-import ".." / nimony / [nimony_model, programs, typenav, expreval, xints, decls, builtintypes, sizeof, typeprops]
+import ".." / nimony / [nimony_model, programs, typenav, expreval, xints, decls, builtintypes, sizeof,
+  typeprops, langmodes, typekeys]
 import hexer_context, pipeline
 import  ".." / lib / stringtrees
 
@@ -24,6 +24,9 @@ proc setOwner(c: var EContext; newOwner: SymId): SymId =
 
 proc demand(c: var EContext; s: SymId) =
   if not c.declared.contains(s):
+    #if pool.syms[s] == "vt.0":
+    #  writeStackTrace()
+    #  quit "wtf"
     c.requires.add s
 
 proc offer(c: var EContext; s: SymId) =
@@ -85,6 +88,7 @@ type
     IsTypeBody
     IsPointerOf
     IsNodecl
+    IsInheritable
 
 proc traverseType(c: var EContext; n: var Cursor; flags: set[TypeFlag] = {})
 
@@ -365,6 +369,48 @@ proc traverseAsNamedType(c: var EContext; n: var Cursor) =
   else:
     c.dest.add symToken(val, info)
 
+proc addRttiField(c: var EContext; info: PackedLineInfo) =
+  c.dest.add tagToken("fld", info)
+  c.dest.add symdefToken(pool.syms.getOrIncl(VTableField), info)
+  c.dest.addEmpty() # pragmas
+  c.dest.addParLe PtrT, info
+  c.dest.addSymUse pool.syms.getOrIncl("Rtti.0." & SystemModuleSuffix), info
+  c.dest.addParRi() # "ptr"
+  c.dest.addParRi() # "fld"
+
+proc traverseObjFields(c: var EContext; n: var Cursor; flags: set[TypeFlag]) =
+  while n.kind != ParRi:
+    case n.substructureKind
+    of FldU:
+      traverseField(c, n, flags)
+    of CaseU:
+      # XXX for now counts each case object field as separate
+      inc n
+      traverseField(c, n, flags)
+      while n.kind != ParRi:
+        case n.substructureKind
+        of OfU:
+          inc n
+          skip n
+          assert n.stmtKind == StmtsS
+          inc n
+          traverseObjFields(c, n, flags)
+          skipParRi c, n
+          skipParRi c, n
+        of ElseU:
+          inc n
+          assert n.stmtKind == StmtsS
+          inc n
+          traverseObjFields(c, n, flags)
+          skipParRi c, n
+        else:
+          error "expected `of` or `else` inside `case`"
+      skipParRi c, n
+    of NilU:
+      skip n
+    else:
+      error "illformed AST inside object: ", n
+
 proc traverseType(c: var EContext; n: var Cursor; flags: set[TypeFlag] = {}) =
   case n.kind
   of DotToken:
@@ -394,7 +440,7 @@ proc traverseType(c: var EContext; n: var Cursor; flags: set[TypeFlag] = {}) =
     case n.typeKind
     of NoType, ErrT, OrT, AndT, NotT, TypedescT, UntypedT, TypedT, TypeKindT, OrdinalT:
       error c, "type expected but got: ", n
-    of IntT, UIntT:
+    of IntT, UintT, FloatT, CharT:
       let start = c.dest.len
       c.dest.add n
       inc n
@@ -406,10 +452,15 @@ proc traverseType(c: var EContext; n: var Cursor; flags: set[TypeFlag] = {}) =
         c.dest.addSymUse pool.syms.getOrIncl(pool.strings[n.litId] & ".c"), n.info
         inc n
         skipParRi c, n
+        if n.kind != ParRi and n.pragmaKind == HeaderP:
+          inc n
+          c.headers.incl n.litId
+          inc n
+          skipParRi c, n
         skipParRi c, n
       else:
         takeParRi c, n
-    of FloatT, CharT, BoolT, AutoT, SymKindT:
+    of BoolT, AutoT, SymKindT:
       c.loop n:
         c.dest.add n
         inc n
@@ -483,12 +534,14 @@ proc traverseType(c: var EContext; n: var Cursor; flags: set[TypeFlag] = {}) =
         c.dest.add symToken(s, sinfo)
         c.demand s
 
+      if IsInheritable in flags:
+        addRttiField c, n.info
+
       if n.kind == DotToken:
         c.dest.add n
         inc n
       else:
-        while n.substructureKind == FldU:
-          traverseField(c, n, flags)
+        traverseObjFields(c, n, flags)
 
       takeParRi c, n
     of EnumT, HoleyEnumT:
@@ -537,7 +590,7 @@ proc maybeByConstRef(c: var EContext; n: var Cursor) =
   if param.typ.typeKind in {TypedescT, StaticT}:
     # do not produce any code for this as it's a compile-time parameter
     skip n
-  elif passByConstRef(param.typ, param.pragmas, c.bits div 8):
+  elif passByConstRef(param.typ, param.pragmas, c.bits div 8) or typeprops.isInheritable(param.typ, false):
     var paramBuf = createTokenBuf()
     paramBuf.add tagToken("param", n.info)
     paramBuf.addSubtree param.name
@@ -568,7 +621,20 @@ proc traverseParams(c: var EContext; n: var Cursor) =
   else:
     error c, "expected (params) but got: ", n
   # the result type
-  traverseType c, n
+  var retType = n
+  skip n
+  # n is now at the pragmas position:
+  if hasPragma(n, RaisesP):
+    # use a tuple type:
+    var ret = createTokenBuf(6)
+    ret.addParLe TupleT, NoLineInfo
+    ret.add symToken(pool.syms.getOrIncl(ErrorCodeName), NoLineInfo)
+    ret.addSubtree retType
+    ret.addParRi()
+    retType = cursorAt(ret, 0)
+    traverseType c, retType
+  else:
+    traverseType c, retType
 
 proc parsePragmas(c: var EContext; n: var Cursor): CollectedPragmas =
   result = default(CollectedPragmas)
@@ -612,8 +678,13 @@ proc parsePragmas(c: var EContext; n: var Cursor): CollectedPragmas =
           result.externName = pool.strings[n.litId]
           inc n
         of NodeclP, SelectanyP, ThreadvarP, GlobalP, DiscardableP, NoReturnP,
-           VarargsP, BorrowP, NoSideEffectP, NoDestroyP, ByCopyP, ByRefP,
-           InlineP, NoinlineP, NoInitP, InjectP, GensymP, UntypedP, ViewP:
+           VarargsP, NoSideEffectP, NoDestroyP, ByCopyP, ByRefP,
+           InlineP, NoinlineP, NoInitP, InjectP, GensymP, UntypedP, ViewP,
+           InheritableP, PureP:
+          result.flags.incl pk
+          inc n
+        of BorrowP:
+          result.flags.incl InlineP
           result.flags.incl pk
           inc n
         of HeaderP:
@@ -633,7 +704,8 @@ proc parsePragmas(c: var EContext; n: var Cursor): CollectedPragmas =
           result.bits = n.intId
           inc n
         of RequiresP, EnsuresP, StringP, RaisesP, ErrorP, AssumeP, AssertP, ReportP,
-           TagsP, DeprecatedP, SideEffectP, KeepOverflowFlagP, SemanticsP:
+           TagsP, DeprecatedP, SideEffectP, KeepOverflowFlagP, SemanticsP,
+           BaseP, FinalP:
           skip n
           continue
         of BuildP, EmitP:
@@ -703,11 +775,15 @@ proc traverseProc(c: var EContext; n: var Cursor; mode: TraverseMode) =
   inc n
   let (s, sinfo) = getSymDef(c, n)
 
+  let newSym: SymId
+
   if mode == TraverseAll:
     # namePos
-    c.dest.add symdefToken(makeLocalSymId(c, s, true), sinfo)
+    newSym = makeLocalSymId(c, s, true)
+    c.dest.add symdefToken(newSym, sinfo)
   else:
     # namePos
+    newSym = s
     c.dest.add symdefToken(s, sinfo)
   c.offer s
 
@@ -759,13 +835,11 @@ proc traverseProc(c: var EContext; n: var Cursor; mode: TraverseMode) =
     c.addKey genPragmas, "inline", pinfo
 
   if prag.externName.len > 0:
-    c.registerMangleInParent(s, prag.externName & ".c")
+    c.registerMangleInParent(newSym, prag.externName & ".c")
     c.addKeyVal genPragmas, "was", symToken(s, pinfo), pinfo
   if SelectanyP in prag.flags:
     c.addKey genPragmas, "selectany", pinfo
 
-  if BorrowP in prag.flags:
-    c.addKey genPragmas, $InlineP, pinfo
   closeGenPragmas c, genPragmas
 
   skip n # miscPos
@@ -804,9 +878,13 @@ proc traverseTypeDecl(c: var EContext; n: var Cursor; mode: TraverseMode) =
   let (s, sinfo) = getSymDef(c, n)
   let oldOwner = setOwner(c, s)
 
+  let newSym: SymId
+
   if mode == TraverseAll:
-    c.dest.add symdefToken(makeLocalSymId(c, s, false), sinfo)
+    newSym = makeLocalSymId(c, s, false)
+    c.dest.add symdefToken(newSym, sinfo)
   else:
+    newSym = s
     c.dest.add symdefToken(s, sinfo)
   c.offer s
 
@@ -831,13 +909,17 @@ proc traverseTypeDecl(c: var EContext; n: var Cursor; mode: TraverseMode) =
   c.dest.addDotToken() # adds pragmas
 
   if prag.externName.len > 0:
-    c.registerMangle(s, prag.externName & ".c")
+    c.registerMangle(newSym, prag.externName & ".c")
   if n.typeKind in TypeclassKinds:
     isGeneric = true
   if isGeneric:
     skip n
   else:
-    traverseType c, n, {IsTypeBody} + (if NodeclP in prag.flags: {IsNodecl} else: {})
+    var flags = {IsTypeBody}
+    if NodeclP in prag.flags: flags.incl IsNodecl
+    if InheritableP in prag.flags and PureP notin prag.flags:
+      flags.incl IsInheritable
+    traverseType c, n, flags
   takeParRi c, n
   swap dst, c.dest
   if NodeclP in prag.flags or isGeneric:
@@ -1006,6 +1088,67 @@ proc isSimpleLiteral(nb: var Cursor): bool =
     else:
       result = false
 
+proc getCompilerProc(c: var EContext; name: string): string =
+  c.demand pool.syms.getOrIncl(name & ".0." & SystemModuleSuffix)
+  result = name & ".c"
+
+proc traverseArrAt(c: var EContext; n: var Cursor) =
+  c.dest.add parLeToken(AtX, n.info) # NIFC uses the `at` token for array indexing
+  inc n
+  traverseExpr(c, n)
+  let beforeIndex = c.dest.len
+  let info = n.info
+  let isUnsigned = getType(c.typeCache, n).typeKind in {UIntT, CharT}
+  traverseExpr(c, n)
+  if n.kind != ParRi:
+    var indexDest = createTokenBuf(c.dest.len - beforeIndex)
+    for i in beforeIndex..<c.dest.len:
+      indexDest.add c.dest[i]
+    c.dest.shrink beforeIndex
+    let indexB = n
+    skip n
+    if n.kind != ParRi:
+      # we have `low(T)`:
+      let indexA = n
+      skip n
+      if BoundCheck in c.activeChecks:
+        let abProcName = getCompilerProc(c, if isUnsigned: "nimUcheckAB" else: "nimIcheckAB")
+        c.dest.copyIntoUnchecked "call", info:
+          c.dest.add symToken(pool.syms.getOrIncl(abProcName), info)
+          c.dest.add indexDest
+          c.dest.addSubtree indexA
+          c.dest.addSubtree indexB
+      else:
+        let indexType = if isUnsigned: c.typeCache.builtins.uintType else: c.typeCache.builtins.intType
+        # we need the substraction regardless:
+        c.dest.addParLe SubX, info
+        c.dest.addSubtree indexType
+        c.dest.add indexDest
+        c.dest.addSubtree indexA
+        c.dest.addParRi()
+    else:
+      # we only have to care about the upper bound:
+      if BoundCheck in c.activeChecks:
+        let abProcName = getCompilerProc(c, if isUnsigned: "nimUcheckB" else: "nimIcheckB")
+        c.dest.copyIntoUnchecked "call", info:
+          c.dest.add symToken(pool.syms.getOrIncl(abProcName), info)
+          c.dest.add indexDest
+          c.dest.addSubtree indexB
+      else:
+        c.dest.add indexDest
+  takeParRi c, n
+
+proc traverseFieldname(c: var EContext; n: var Cursor) =
+  if n.kind == Symbol:
+    let ext = maybeMangle(c, n.symId)
+    if ext.len != 0:
+      c.dest.addSymUse pool.syms.getOrIncl(ext), n.info
+    else:
+      c.dest.add n
+    inc n
+  else:
+    traverseExpr c, n
+
 proc traverseExpr(c: var EContext; n: var Cursor) =
   case n.kind
   of EofToken, ParRi:
@@ -1068,13 +1211,7 @@ proc traverseExpr(c: var EContext; n: var Cursor) =
     of ExprX:
       traverseStmtsExpr c, n
     of ArrAtX:
-      # XXX does not handle index type with offset low(I), maybe should be done in sem
-      c.dest.add tagToken("at", n.info)
-      inc n
-      traverseExpr(c, n)
-      traverseExpr(c, n)
-      while n.kind != ParRi: skip n
-      takeParRi c, n
+      traverseArrAt c, n
     of TupatX:
       c.dest.add tagToken("dot", n.info)
       inc n # skip tag
@@ -1088,8 +1225,9 @@ proc traverseExpr(c: var EContext; n: var Cursor) =
       c.dest.add tagToken("dot", n.info)
       inc n # skip tag
       traverseExpr c, n # obj
-      traverseExpr c, n # field
-      traverseExpr c, n # inheritance depth
+      traverseFieldname c, n # field
+      if n.kind != ParRi:
+        traverseExpr c, n # inheritance depth
       takeParRi c, n
     of DdotX:
       c.dest.add tagToken("dot", n.info)
@@ -1097,7 +1235,7 @@ proc traverseExpr(c: var EContext; n: var Cursor) =
       inc n # skip tag
       traverseExpr c, n
       c.dest.addParRi()
-      traverseExpr c, n
+      traverseFieldname c, n
       traverseExpr c, n
       takeParRi c, n
     of HaddrX, AddrX:
@@ -1159,13 +1297,14 @@ proc traverseExpr(c: var EContext; n: var Cursor) =
       takeParRi c, n
     of ErrX, NewobjX, NewrefX, SetConstrX, PlusSetX, MinusSetX, MulSetX, XorSetX, EqSetX, LeSetX, LtSetX,
        InSetX, CardX, BracketX, CurlyX, TupX, CompilesX, DeclaredX, DefinedX, HighX, LowX, TypeofX, UnpackX,
-       EnumtostrX, IsmainmoduleX, DefaultobjX, DefaulttupX, DoX, CchoiceX, OchoiceX,
-       EmoveX, DestroyX, DupX, CopyX, WasmovedX, SinkhX, TraceX, CurlyatX, PragmaxX, QuotedX, TabconstrX:
+       FieldsX, FieldpairsX, EnumtostrX, IsmainmoduleX, DefaultobjX, DefaulttupX, DoX, CchoiceX, OchoiceX,
+       EmoveX, DestroyX, DupX, CopyX, WasmovedX, SinkhX, TraceX, CurlyatX, PragmaxX, QuotedX, TabconstrX,
+       InstanceofX, ProccallX, InternalTypeNameX, InternalFieldPairsX, FailedX:
       error c, "BUG: not eliminated: ", n
       #skip n
     of AtX, PatX, ParX, NilX, InfX, NeginfX, NanX, FalseX, TrueX, AndX, OrX, NotX, NegX,
        AddX, SubX, MulX, DivX, ModX, ShrX, ShlX,
-       BitandX, BitorX, BitxorX, BitnotX, OconvX, OvfX:
+       BitandX, BitorX, BitxorX, BitnotX, BaseobjX, OvfX:
       c.dest.add n
       inc n
       while n.kind != ParRi:
@@ -1193,7 +1332,7 @@ proc traverseExpr(c: var EContext; n: var Cursor) =
   of Symbol:
     var inlineValue = getInitValue(c.typeCache, n.symId)
     var inlineValueCopy = inlineValue
-    if not cursorIsNil(inlineValue) and isSimpleLiteral(inlineValueCopy):
+    if not cursorIsNil(inlineValue) and inlineValue.kind != DotToken and isSimpleLiteral(inlineValueCopy):
       traverseExpr(c, inlineValue)
     else:
       let ext = maybeMangle(c, n.symId)
@@ -1388,6 +1527,61 @@ proc traverseKeepovf(c: var EContext; n: var Cursor) =
   traverseExpr c, n # destination
   takeParRi c, n
 
+proc trRaise(c: var EContext; n: var Cursor) =
+  let info = n.info
+  inc n
+  if c.exceptLabels.len == 0:
+    # translate `raise` to `return`:
+    c.dest.addParLe RetS, info
+    traverseExpr c, n
+    takeParRi c, n
+  else:
+    # translate `raise` to `goto`:
+    skip n # raise expression handled in constparams.nim
+    takeParRi c, n
+    let lab = c.exceptLabels[^1]
+    c.dest.add tagToken("jmp", info)
+    c.dest.add symToken(lab, info)
+    c.dest.addParRi()
+
+proc trTry(c: var EContext; n: var Cursor) =
+  # We only deal with the control flow here.
+  let info = n.info
+  inc n
+  var nn = n
+  skip nn # stmts
+  let oldLen = c.exceptLabels.len
+  if nn.substructureKind == ExceptU:
+    let lab = pool.syms.getOrIncl("`lab." & $getTmpId(c))
+    c.exceptLabels.add lab
+  traverseStmt c, n
+
+  while n.substructureKind == ExceptU:
+    let lab = c.exceptLabels[oldLen]
+    c.dest.copyIntoKind IfS, n.info:
+      c.dest.copyIntoKind ElifU, n.info:
+        c.dest.addParPair(FalseX, n.info)
+        c.dest.copyIntoKind StmtsS, n.info:
+          c.dest.add tagToken("lab", n.info)
+          c.dest.add symdefToken(lab, n.info)
+          c.dest.addParRi()
+          inc n
+          skip n # skip `T as e`, handled in constparams.nim
+          traverseStmt c, n
+          skipParRi n
+        c.dest.addParRi()
+      c.dest.addParRi()
+  c.exceptLabels.shrink oldLen
+
+  # Since we duplicated the finally statements before every `raise` statement we
+  # know that when control flow reaches here, no error was raised. Hence we do not
+  # need to add logic to re-raise an exception here.
+  if n.substructureKind == FinU:
+    inc n
+    traverseStmt c, n
+    skipParRi n
+  takeParRi c, n
+
 proc traverseStmt(c: var EContext; n: var Cursor; mode = TraverseAll) =
   case n.kind
   of DotToken:
@@ -1476,8 +1670,10 @@ proc traverseStmt(c: var EContext; n: var Cursor; mode = TraverseAll) =
     of CaseS: traverseCase c, n
     of YldS, ForS, InclS, ExclS, DeferS, UnpackDeclS:
       error c, "BUG: not eliminated: ", n
-    of TryS, RaiseS:
-      error c, "BUG: not implemented: ", n
+    of TryS:
+      trTry c, n
+    of RaiseS:
+      trRaise c, n
     of FuncS, ProcS, ConverterS, MethodS:
       moveToTopLevel(c, mode):
         traverseProc c, n, mode
@@ -1652,14 +1848,15 @@ proc writeOutput(c: var EContext, rootInfo: PackedLineInfo) =
   b.close()
 
 
-proc expand*(infile: string, bits: int) =
+proc expand*(infile: string; bits: int; flags: set[CheckMode]) =
   let (dir, file, ext) = splitModulePath(infile)
   var c = EContext(dir: (if dir.len == 0: getCurrentDir() else: dir), ext: ext, main: file,
     dest: createTokenBuf(),
     nestedIn: @[(StmtsS, SymId(0))],
     typeCache: createTypeCache(),
     bits: bits,
-    localDeclCounters: 1000
+    localDeclCounters: 1000,
+    activeChecks: flags
     )
   c.openMangleScope()
 

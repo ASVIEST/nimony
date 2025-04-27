@@ -224,7 +224,7 @@ type
     SetconstrTagId
     TabconstrTagId
     AshrTagId
-    OconvTagId
+    BaseobjTagId
     HconvTagId
     DconvTagId
     CallstrlitTagId
@@ -234,10 +234,14 @@ type
     CompilesTagId
     DeclaredTagId
     DefinedTagId
+    InstanceofTagId
+    ProccallTagId
     HighTagId
     LowTagId
     TypeofTagId
     UnpackTagId
+    FieldsTagId
+    FieldpairsTagId
     EnumtostrTagId
     IsmainmoduleTagId
     DefaultobjTagId
@@ -281,6 +285,13 @@ type
     SideEffectTagId
     KeepOverflowFlagTagId
     SemanticsTagId
+    InheritableTagId
+    BaseTagId
+    PureTagId
+    FinalTagId
+    InternalTypeNameTagId
+    InternalFieldPairsTagId
+    FailedTagId
 const
   TagData*: array[TagEnum, (string, int)] = [
     ("InvalidTagId", 0),
@@ -505,7 +516,7 @@ const
     ("setconstr", 219),
     ("tabconstr", 220),
     ("ashr", 221),
-    ("oconv", 222),
+    ("baseobj", 222),
     ("hconv", 223),
     ("dconv", 224),
     ("callstrlit", 225),
@@ -515,51 +526,62 @@ const
     ("compiles", 229),
     ("declared", 230),
     ("defined", 231),
-    ("high", 232),
-    ("low", 233),
-    ("typeof", 234),
-    ("unpack", 235),
-    ("enumtostr", 236),
-    ("ismainmodule", 237),
-    ("defaultobj", 238),
-    ("defaulttup", 239),
-    ("expr", 240),
-    ("do", 241),
-    ("arrat", 242),
-    ("tupat", 243),
-    ("plusset", 244),
-    ("minusset", 245),
-    ("mulset", 246),
-    ("xorset", 247),
-    ("eqset", 248),
-    ("leset", 249),
-    ("ltset", 250),
-    ("inset", 251),
-    ("card", 252),
-    ("emove", 253),
-    ("destroy", 254),
-    ("dup", 255),
-    ("copy", 256),
-    ("wasmoved", 257),
-    ("sinkh", 258),
-    ("trace", 259),
-    ("errv", 260),
-    ("staticstmt", 261),
-    ("bind", 262),
-    ("mixin", 263),
-    ("using", 264),
-    ("asm", 265),
-    ("defer", 266),
-    ("index", 267),
-    ("public", 268),
-    ("private", 269),
-    ("inject", 270),
-    ("gensym", 271),
-    ("error", 272),
-    ("report", 273),
-    ("tags", 274),
-    ("deprecated", 275),
-    ("sideEffect", 276),
-    ("keepOverflowFlag", 277),
-    ("semantics", 278)
+    ("instanceof", 232),
+    ("proccall", 233),
+    ("high", 234),
+    ("low", 235),
+    ("typeof", 236),
+    ("unpack", 237),
+    ("fields", 238),
+    ("fieldpairs", 239),
+    ("enumtostr", 240),
+    ("ismainmodule", 241),
+    ("defaultobj", 242),
+    ("defaulttup", 243),
+    ("expr", 244),
+    ("do", 245),
+    ("arrat", 246),
+    ("tupat", 247),
+    ("plusset", 248),
+    ("minusset", 249),
+    ("mulset", 250),
+    ("xorset", 251),
+    ("eqset", 252),
+    ("leset", 253),
+    ("ltset", 254),
+    ("inset", 255),
+    ("card", 256),
+    ("emove", 257),
+    ("destroy", 258),
+    ("dup", 259),
+    ("copy", 260),
+    ("wasmoved", 261),
+    ("sinkh", 262),
+    ("trace", 263),
+    ("errv", 264),
+    ("staticstmt", 265),
+    ("bind", 266),
+    ("mixin", 267),
+    ("using", 268),
+    ("asm", 269),
+    ("defer", 270),
+    ("index", 271),
+    ("public", 272),
+    ("private", 273),
+    ("inject", 274),
+    ("gensym", 275),
+    ("error", 276),
+    ("report", 277),
+    ("tags", 278),
+    ("deprecated", 279),
+    ("sideEffect", 280),
+    ("keepOverflowFlag", 281),
+    ("semantics", 282),
+    ("inheritable", 283),
+    ("base", 284),
+    ("pure", 285),
+    ("final", 286),
+    ("internalTypeName", 287),
+    ("internalFieldPairs", 288),
+    ("failed", 289)
   ]

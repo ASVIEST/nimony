@@ -139,6 +139,7 @@ proc trAnd(c: var ControlFlow; n: var Cursor; tjmp, fjmp: var FixupList) =
   fjmp.add c.jmpForw(info)
   c.dest.addParRi()
   c.patch l1
+  c.stmtBegin = c.dest.len
   trCondOp2 c, n, tjmp, fjmp, info
 
 proc trOr(c: var ControlFlow; n: var Cursor; tjmp, fjmp: var FixupList) =
@@ -152,6 +153,7 @@ proc trOr(c: var ControlFlow; n: var Cursor; tjmp, fjmp: var FixupList) =
   let l1 = c.jmpForw(info)
   c.dest.addParRi()
   c.patch l1
+  c.stmtBegin = c.dest.len
   trCondOp2 c, n, tjmp, fjmp, info
 
 proc trIte(c: var ControlFlow; n: var Cursor; tjmp, fjmp: var FixupList) =
@@ -783,14 +785,14 @@ proc trExpr(c: var ControlFlow; n: var Cursor) =
        NilX, FalseX, TrueX, NotX, NegX, OconstrX, NewobjX, NewrefX, TupConstrX,
        AconstrX, SetConstrX, OchoiceX, CchoiceX, AddX, SubX, MulX, DivX, ModX,
        ShrX, ShlX, AshrX, BitandX, BitorX, BitxorX, BitnotX, EqX, NeqX, LeX, LtX,
-       CastX, ConvX, OconvX, HconvX, DconvX, InfX, NegInfX, NanX, SufX,
-       UnpackX, EnumToStrX, XorX,
+       CastX, ConvX, BaseobjX, HconvX, DconvX, InfX, NegInfX, NanX, SufX,
+       UnpackX, FieldsX, FieldpairsX, EnumToStrX, XorX,
        IsMainModuleX, DefaultObjX, DefaultTupX, PlusSetX, MinusSetX,
        MulSetX, XorSetX, EqSetX, LeSetX, LtSetX, InSetX, CardX, EmoveX,
        DestroyX, DupX, CopyX, WasMovedX, SinkhX, TraceX,
-       BracketX, CurlyX, TupX, OvfX:
+       BracketX, CurlyX, TupX, OvfX, InstanceofX, ProccallX, InternalFieldPairsX, FailedX:
       trExprLoop c, n
-    of CompilesX, DeclaredX, DefinedX, HighX, LowX, TypeofX, SizeofX, AlignofX, OffsetofX:
+    of CompilesX, DeclaredX, DefinedX, HighX, LowX, TypeofX, SizeofX, AlignofX, OffsetofX, InternalTypeNameX:
       # we want to avoid false dependencies for `sizeof(var)` as it doesn't really "use" the variable:
       c.dest.addDotToken()
       skip n

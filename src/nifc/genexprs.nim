@@ -3,7 +3,7 @@
 #           NIFC Compiler
 #        (c) Copyright 2024 Andreas Rumpf
 #
-#    See the file "copying.txt", included in this
+#    See the file "license.txt", included in this
 #    distribution, for details about the copyright.
 #
 
@@ -133,13 +133,12 @@ proc genLvalue(c: var GeneratedCode; n: var Cursor) =
     genx c, n
     var fld = n
     skip n
-    if n.kind != IntLit:
-      error c.m, "expected integer literal (inheritance depth) but got: ", n
-    var inh = pool.integers[n.intId]
-    inc n
-    while inh > 0:
-      c.add ".Q"
-      dec inh
+    if n.kind == IntLit:
+      var inh = pool.integers[n.intId]
+      inc n
+      while inh > 0:
+        c.add ".Q"
+        dec inh
     c.add Dot
     genx c, fld
     skipParRi n
@@ -287,16 +286,19 @@ proc genx(c: var GeneratedCode; n: var Cursor) =
     skip n
   of AconstrC:
     inc n
+    let isUncheckedArray = n.typeKind in {PtrT, AptrT, FlexarrayT}
     c.objConstrType(n)
     c.add CurlyLe
-    c.add ".a = "
-    c.add CurlyLe
+    if not isUncheckedArray:
+      c.add ".a = "
+      c.add CurlyLe
     var i = 0
     while n.kind != ParRi:
       if i > 0: c.add Comma
       c.genx n
       inc i
-    c.add CurlyRi
+    if not isUncheckedArray:
+      c.add CurlyRi
     c.add CurlyRi
     skipParRi n
   of OconstrC:
@@ -306,22 +308,33 @@ proc genx(c: var GeneratedCode; n: var Cursor) =
     var i = 0
     while n.kind != ParRi:
       if i > 0: c.add Comma
-      if n.exprKind == OconstrC:
-        # inheritance
-        c.add Dot
-        c.add "Q"
-        c.add AsgnOpr
-        c.genx n
-      else:
-        assert n.substructureKind == KvU
+      if n.substructureKind == KvU:
         inc n
         c.add Dot
         c.genx n
         c.add AsgnOpr
         c.genx n
         skipParRi n
+      elif n.exprKind == OconstrC:
+        # inheritance
+        c.add Dot
+        c.add "Q"
+        c.add AsgnOpr
+        c.genx n
+      else:
+        c.genx n
       inc i
     c.add CurlyRi
+    skipParRi n
+  of BaseobjC:
+    inc n
+    skip n # type not interesting for us
+    var counter = pool.integers[n.intId]
+    skip n
+    c.genx n
+    while counter > 0:
+      c.add ".Q"
+      dec counter
     skipParRi n
   of ParC:
     c.add ParLe

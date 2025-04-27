@@ -7,7 +7,7 @@
 ## Helpers for declarative constructs like `let` statements or `proc` declarations.
 
 import std / assertions
-import nifstreams, nifcursors, nimony_model
+import nifstreams, nifcursors, nimony_model, programs
 
 proc isRoutine*(t: SymKind): bool {.inline.} =
   t in {ProcY, FuncY, IteratorY, MacroY, TemplateY, ConverterY, MethodY}
@@ -125,6 +125,7 @@ const
   TypevarsPos* = 3
   ParamsPos* = 4
   ResultPos* = 5
+  ProcPragmasPos* = 6
   BodyPos* = 8
 
 proc asRoutine*(c: Cursor; mode = SkipExclBody): Routine =
@@ -143,8 +144,7 @@ type
 proc isGeneric*(r: TypeDecl): bool {.inline.} =
   r.typevars.substructureKind == TypevarsU
 
-proc asTypeDecl*(c: Cursor): TypeDecl =
-  var c = c
+proc takeTypeDecl*(c: var Cursor; mode: SkipMode): TypeDecl =
   let kind = symKind c
   result = TypeDecl(kind: kind)
   if kind == TypeY:
@@ -156,8 +156,19 @@ proc asTypeDecl*(c: Cursor): TypeDecl =
     result.typevars = c
     skip c
     result.pragmas = c
-    skip c
-    result.body = c
+    if mode >= SkipInclBody:
+      skip c
+      result.body = c
+      if mode == SkipFinalParRi:
+        skip c
+        if c.kind == ParRi:
+          inc c
+        else:
+          raiseAssert "expected ')' inside (" & $result.kind
+
+proc asTypeDecl*(c: Cursor): TypeDecl =
+  var c = c
+  result = takeTypeDecl(c, SkipInclBody)
 
 type
   ObjectDecl* = object
@@ -174,6 +185,40 @@ proc asObjectDecl*(c: Cursor): ObjectDecl =
     result.parentType = c
     skip c
     result.firstField = c
+
+type ObjFieldIter* = object
+  nested: int
+
+proc initObjFieldIter*(): ObjFieldIter =
+  result = ObjFieldIter(nested: 1)
+
+proc nextField*(iter: var ObjFieldIter, n: var Cursor, keepCase = false): bool =
+  result = false
+  while iter.nested != 0:
+    if n.kind == ParRi:
+      dec iter.nested
+      if iter.nested != 0: inc n
+    else:
+      case n.substructureKind
+      of CaseU:
+        if keepCase:
+          result = true
+          break
+        else:
+          inc iter.nested
+          inc n
+      of WhenU, StmtsU, NilU, ElseU:
+        inc iter.nested
+        inc n
+      of ElifU, OfU:
+        inc iter.nested
+        inc n
+        skip n
+      of FldU:
+        result = true
+        break
+      else:
+        error "illformed AST inside object: ", n
 
 type
   EnumDecl* = object

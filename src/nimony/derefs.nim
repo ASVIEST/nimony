@@ -19,6 +19,9 @@ There are 4 cases:
 3. `T` to `var T` transfer: Insert HiddenAddr instruction.
 4. `T` to `T` transfer: Nothing to do.
 
+Now also does some simple checks for `raise` statements:
+- Only a routine marked as `.raises` can call another routine marked as `.raises`.
+
 ]##
 
 import std / [assertions]
@@ -39,8 +42,9 @@ type
 
   CurrentRoutine = object
     returnExpects: Expects
-    firstParam: SymId
     firstParamKind: TypeKind
+    canRaise: bool
+    firstParam: SymId
     resultSym: SymId
     dangerousLocations: seq[(SymId, Cursor)] # Cursor is only used for line information
 
@@ -72,9 +76,13 @@ proc rootOf(n: Cursor; allowIndirection = false): SymId =
         inc n
       else:
         break
-    of DconvX, OconvX:
+    of DconvX:
       inc n
       skip n # skip the type
+    of BaseobjX:
+      inc n
+      skip n # skip intlit
+      skip n # skip type
     else: break
   case n.kind
   of Symbol, SymbolDef:
@@ -119,9 +127,13 @@ proc validBorrowsFrom(c: var Context; n: Cursor): bool =
     of HderefX, HaddrX, DerefX, AddrX, DdotX, PatX:
       inc n
       someIndirection = true
-    of DconvX, OconvX, ConvX, CastX:
+    of DconvX, ConvX, CastX:
       inc n
       skip n # skip the type
+    of BaseobjX:
+      inc n
+      skip n # skip type
+      skip n # skip intlit
     of ExprX:
       inc n
       while true:
@@ -198,7 +210,7 @@ proc borrowsFromReadonly(c: var Context; n: Cursor): bool =
     of VarY, GvarY, TvarY:
       result = local.typ.typeKind == LentT
     of ParamY:
-      result = local.typ.typeKind notin {MutT, OutT, LentT}
+      result = local.typ.typeKind notin {MutT, OutT, LentT, SinkT}
     else:
       result = false
   elif n.kind in {StringLit, IntLit, UIntLit, FloatLit, CharLit} or
@@ -270,41 +282,69 @@ proc checkForDangerousLocations(c: var Context; n: var Cursor) =
   elif n.kind == ParLe:
     recurse()
 
+proc trProcPragmas(c: var Context; n: var Cursor) =
+  # we also need to traverse the `requires` pragmas!
+  if n.kind == DotToken:
+    takeToken c, n
+  else:
+    takeToken c, n # pragmas
+    while n.kind != ParRi:
+      let pk = n.pragmaKind
+      if pk == RequiresP:
+        tr c, n, WantT
+      elif pk == RaisesP:
+        c.r.canRaise = true
+        takeTree c.dest, n
+      else:
+        takeTree c.dest, n
+    takeParRi c, n
+
 proc trProcDecl(c: var Context; n: var Cursor) =
   c.typeCache.openScope()
   takeToken c, n
   let symId = n.symId
   var isGeneric = false
   var r = CurrentRoutine(returnExpects: WantT)
+  swap c.r, r
   for i in 0..<BodyPos:
     if i == TypevarsPos:
       isGeneric = n.substructureKind == TypevarsU
-    if i == ParamsPos:
+      takeTree c.dest, n
+    elif i == ParamsPos:
       c.typeCache.registerParams(symId, n)
       var params = n
       inc params
       let firstParam = asLocal(params)
       if firstParam.kind == ParamY:
-        r.firstParam = firstParam.name.symId
-        r.firstParamKind = firstParam.typ.typeKind
+        c.r.firstParam = firstParam.name.symId
+        c.r.firstParamKind = firstParam.typ.typeKind
+      takeTree c.dest, n
+    elif i == ProcPragmasPos and not isGeneric:
+      trProcPragmas(c, n)
+    elif i == ResultPos and n.typeKind in {MutT, OutT, LentT}:
+      c.r.returnExpects = WantVarTResult
+      takeTree c.dest, n
+    else:
+      takeTree c.dest, n
 
-    if i == ResultPos and n.typeKind in {MutT, OutT, LentT}:
-      r.returnExpects = WantVarTResult
-    takeTree c.dest, n
   if isGeneric:
     takeTree c.dest, n
     takeParRi c, n
   else:
-    swap c.r, r
     var body = n
-    trSons c, n, r.returnExpects
+    trSons c, n, c.r.returnExpects
     if c.r.dangerousLocations.len > 0:
       checkForDangerousLocations c, body
-    swap c.r, r
     takeParRi c, n
+  swap c.r, r
   c.typeCache.closeScope()
 
+proc callCanRaise(c: var Context; info: PackedLineInfo) =
+  if not c.r.canRaise:
+    buildLocalErr c.dest, info, "cannot call a routine marked as `.raises` outside of a `try`..`except` block"
+
 proc trCallArgs(c: var Context; n: var Cursor; fnType: Cursor) =
+  let info = n.info
   var fnType = skipProcTypeToParams(fnType)
   assert fnType.isParamsTag
   inc fnType
@@ -326,6 +366,13 @@ proc trCallArgs(c: var Context; n: var Cursor; fnType: Cursor) =
       # do not advance formal parameter:
       fnType = previousFormalParam
     tr c, n, e
+  while fnType.kind != ParRi: skip fnType
+  inc fnType # skip ParRi
+  # skip return type:
+  skip fnType
+  # now at the pragmas position:
+  if hasPragma(fnType, RaisesP):
+    callCanRaise(c, info)
 
 proc firstArgIsMutable(c: var Context; n: Cursor): bool =
   assert n.exprKind in CallKinds
@@ -557,6 +604,20 @@ proc trVarHook(c: var Context; n: var Cursor) =
     tr c, n, WantT
   takeParRi c, n
 
+proc trTry(c: var Context; n: var Cursor) =
+  takeToken c, n
+  var nn = n
+  skip nn
+  let oldCanRaise = c.r.canRaise
+  if nn.substructureKind == ExceptU:
+    c.r.canRaise = true
+  # now can raise in the `try` block:
+  tr c, n, WantT
+  c.r.canRaise = oldCanRaise
+  while n.kind != ParRi:
+    tr c, n, WantT
+  takeParRi c, n
+
 proc tr(c: var Context; n: var Cursor; e: Expects) =
   case n.kind
   of Symbol:
@@ -591,7 +652,9 @@ proc tr(c: var Context; n: var Cursor; e: Expects) =
         trTupleConstr c, n, e
     of ExprX:
       trStmtListExpr c, n, e
-    of DconvX, OconvX:
+    of DconvX:
+      trSons c, n, e
+    of BaseobjX:
       trSons c, n, WantT
     of ParX:
       trSons c, n, e
@@ -616,6 +679,8 @@ proc tr(c: var Context; n: var Cursor; e: Expects) =
         trAsgn c, n
       of LocalDecls:
         trLocal c, n
+      of TryS:
+        trTry c, n
       of ProcS, FuncS, MacroS, MethodS, ConverterS, IteratorS:
         trProcDecl c, n
       of ScopeS:

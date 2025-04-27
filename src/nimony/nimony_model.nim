@@ -5,13 +5,15 @@
 # distribution, for details about the copyright.
 
 import std / assertions
-include nifprelude
-import stringviews
+include ".." / lib / nifprelude
+import ".." / lib / stringviews
 
 import ".." / models / [tags, nimony_tags, callconv_tags]
 export nimony_tags, callconv_tags
 
 template tagEnum*(c: Cursor): TagEnum = cast[TagEnum](tag(c))
+
+template tagEnum*(c: PackedToken): TagEnum = cast[TagEnum](tag(c))
 
 proc stmtKind*(c: Cursor): NimonyStmt {.inline.} =
   if c.kind == ParLe and rawTagIsNimonyStmt(tagEnum(c)):
@@ -116,14 +118,14 @@ const
 const
   RoutineKinds* = {ProcY, FuncY, IteratorY, TemplateY, MacroY, ConverterY, MethodY}
   CallKinds* = {CallX, CallstrlitX, CmdX, PrefixX, InfixX, HcallX}
-  ConvKinds* = {HconvX, ConvX, OconvX, DconvX, CastX}
+  ConvKinds* = {HconvX, ConvX, DconvX, CastX}
   TypeclassKinds* = {ConceptT, TypeKindT, OrdinalT, OrT, AndT, NotT}
 
 proc addParLe*(dest: var TokenBuf; kind: TypeKind|SymKind|ExprKind|StmtKind|SubstructureKind|ControlFlowKind|CallConv;
                info = NoLineInfo) =
   dest.add parLeToken(cast[TagId](kind), info)
 
-proc addParPair*(dest: var TokenBuf; kind: TypeKind|PragmaKind|ExprKind|StmtKind; info = NoLineInfo) =
+proc addParPair*(dest: var TokenBuf; kind: TypeKind|PragmaKind|ExprKind|StmtKind|CallConv; info = NoLineInfo) =
   dest.add parLeToken(cast[TagId](kind), info)
   dest.addParRi()
 
@@ -176,26 +178,6 @@ proc addEmpty3*(dest: var TokenBuf; info: PackedLineInfo = NoLineInfo) =
   dest.add dotToken(info)
   dest.add dotToken(info)
   dest.add dotToken(info)
-
-proc takeTree*(dest: var TokenBuf; n: var Cursor) =
-  if n.kind != ParLe:
-    dest.add n
-    inc n
-  else:
-    var nested = 0
-    while true:
-      dest.add n
-      case n.kind
-      of ParLe: inc nested
-      of ParRi:
-        dec nested
-        if nested == 0:
-          inc n
-          break
-      of EofToken:
-        raiseAssert "expected ')', but EOF reached"
-      else: discard
-      inc n
 
 proc sameTrees*(a, b: Cursor): bool =
   var a = a

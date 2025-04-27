@@ -3,7 +3,7 @@
 #           Hexer Compiler
 #        (c) Copyright 2025 Andreas Rumpf
 #
-#    See the file "copying.txt", included in this
+#    See the file "license.txt", included in this
 #    distribution, for details about the copyright.
 #
 
@@ -17,8 +17,8 @@ to type `(T, T)`, etc.
 import std/[assertions, tables]
 
 include nifprelude
-import nifindexes, symparser, treemangler, typekeys, hexer_context
-import ".." / nimony / [nimony_model, decls, programs, typenav, expreval, xints, builtintypes]
+import nifindexes, symparser, treemangler, hexer_context
+import ".." / nimony / [nimony_model, decls, programs, typenav, expreval, xints, builtintypes, typekeys, typeprops]
 
 type
   TypeCursor = Cursor
@@ -31,6 +31,7 @@ type
   LiftingCtx* = object
     dest*: TokenBuf
     op: AttachedOp
+    routineKind: SymKind
     calledErrorHook: PackedLineInfo
     info: PackedLineInfo
     requests: seq[GenHookRequest]
@@ -60,17 +61,13 @@ proc getCompilerProc(c: var LiftingCtx; name: string): SymId =
 
 proc isTrivialForFields(c: var LiftingCtx; n: Cursor): bool =
   var n = n
-  while n.kind != ParRi:
-    if n.substructureKind == FldU:
-      let field = takeLocal(n, SkipFinalParRi)
-      if field.kind == FldY:
-        if not isTrivial(c, field.typ):
-          return false
-      else:
-        skip n
-    else:
-      if not isTrivial(c, n):
+  var iter = initObjFieldIter()
+  while nextField(iter, n):
+    let field = takeLocal(n, SkipFinalParRi)
+    if field.kind == FldY:
+      if not isTrivial(c, field.typ):
         return false
+    else:
       skip n
   return true
 
@@ -82,7 +79,10 @@ proc isTrivialObjectBody(c: var LiftingCtx; body: Cursor): bool =
 
   var baseType = n
   skip n # skip basetype
-  result = isTrivialForFields(c, n)
+  if n.kind != DotToken:
+    result = isTrivialForFields(c, n)
+  else:
+    result = true
   if result:
     if baseType.kind == DotToken:
       result = true
@@ -99,6 +99,9 @@ proc isTrivialTypeDecl(c: var LiftingCtx; n: Cursor): bool =
     result = false
   of ObjectT:
     result = isTrivialObjectBody(c, r.body)
+    if result and c.op == attachedWasMoved and hasRtti(r.pragmas):
+      # We set the RTTI field in `=wasMoved` so objects with a vtable are not trivial.
+      result = false
   else:
     result = true
 
@@ -253,6 +256,77 @@ proc accessTupField(c: var LiftingCtx; tup: TokenBuf; idx: int; paramPos = 0): T
       copyTree result, tup
     result.add intToken(pool.integers.getOrIncl(idx), c.info)
 
+proc unravelObjField(c: var LiftingCtx; n: var Cursor; paramA, paramB: TokenBuf) =
+  let r = takeLocal(n, SkipFinalParRi)
+  assert r.kind == FldY
+  # create `paramA.field` because we need to do `paramA.field = paramB.field` etc.
+  let fieldType = r.typ
+  case c.op
+  of attachedDestroy, attachedTrace, attachedWasMoved:
+    let a = accessObjField(c, paramA, r.name)
+    unravel c, fieldType, a, paramB
+  of attachedCopy, attachedSink, attachedDup:
+    let a = accessObjField(c, paramA, r.name, 0)
+    let b = accessObjField(c, paramB, r.name, 1)
+    unravel c, fieldType, a, b
+
+proc unravelObjFields(c: var LiftingCtx; n: var Cursor; paramA, paramB: TokenBuf) =
+  while n.kind != ParRi:
+    case n.substructureKind
+    of CaseU:
+      # XXX for now counts each case object field as separate
+      if c.op in {attachedCopy, attachedSink}:
+        # TODO: `=copy` needs to be special cased like in Nim
+        var nCopy = n
+        let prevOp = c.op
+        c.op = attachedDestroy
+        unravelObjFields(c, nCopy, paramA, paramB)
+        c.op = prevOp
+      let info = n.info
+      inc n
+      var selector = n
+      if c.op != attachedDestroy:
+        # copy the selector before case stmt, but destroy after case stmt
+        unravelObjField c, selector, paramA, paramB
+
+      c.dest.addParLe CaseU, info
+
+      var selectorField = takeLocal(n, SkipFinalParRi)
+      let dest = accessObjField(c, paramA, selectorField.name)
+      c.dest.add dest
+
+      while n.kind != ParRi:
+        case n.substructureKind
+        of OfU:
+          c.dest.takeToken(n)
+          c.dest.takeTree(n)
+          assert n.stmtKind == StmtsS
+          c.dest.takeToken(n)
+          unravelObjFields c, n, paramA, paramB
+          takeParRi(c.dest, n)
+          takeParRi(c.dest, n)
+        of ElseU:
+          c.dest.takeToken(n)
+          assert n.stmtKind == StmtsS
+          c.dest.takeToken(n)
+          unravelObjFields c, n, paramA, paramB
+          takeParRi(c.dest, n)
+          takeParRi(c.dest, n)
+        else:
+          error "expected `of` or `else` inside `case`"
+
+      takeParRi(c.dest, n) # end of case
+
+      if c.op == attachedDestroy:
+        # destroy the selector after case stmt
+        unravelObjField c, selector, paramA, paramB
+    of FldU:
+      unravelObjField c, n, paramA, paramB
+    of NilU:
+      skip n
+    else:
+      error "illformed AST inside object: ", n
+
 proc unravelObj(c: var LiftingCtx; n: Cursor; paramA, paramB: TokenBuf) =
   var n = n
   if n.typeKind in {RefT, PtrT}:
@@ -261,21 +335,9 @@ proc unravelObj(c: var LiftingCtx; n: Cursor; paramA, paramB: TokenBuf) =
   inc n
   # recurse for the inherited object type, if any:
   if n.kind != DotToken:
-    unravelObj c, n, paramA, paramB
+    unravelObj c, toTypeImpl(n), paramA, paramB
   skip n # inheritance is gone
-  while n.kind != ParRi:
-    let r = takeLocal(n, SkipFinalParRi)
-    assert r.kind == FldY
-    # create `paramA.field` because we need to do `paramA.field = paramB.field` etc.
-    let fieldType = r.typ
-    case c.op
-    of attachedDestroy, attachedTrace, attachedWasMoved:
-      let a = accessObjField(c, paramA, r.name)
-      unravel c, fieldType, a, paramB
-    of attachedCopy, attachedSink, attachedDup:
-      let a = accessObjField(c, paramA, r.name, 0)
-      let b = accessObjField(c, paramB, r.name, 1)
-      unravel c, fieldType, a, b
+  unravelObjFields c, n, paramA, paramB
 
 proc unravelTuple(c: var LiftingCtx;
                   n: Cursor; paramA, paramB: TokenBuf) =
@@ -460,13 +522,30 @@ proc unravel(c: var LiftingCtx; typ: TypeCursor; paramA, paramB: TokenBuf) =
     let fn = lift(c, typ)
     maybeCallHook c, fn, paramA, paramB
 
-proc unravelDispatch(c: var LiftingCtx; typ: TypeCursor; paramA, paramB: TokenBuf) =
+proc setupVTableField(c: var LiftingCtx; param: TokenBuf; cls: SymId) =
+  copyIntoKind c.dest, AsgnS, c.info:
+    copyIntoKind c.dest, DotX, c.info:
+      copyIntoKind c.dest, DerefX, c.info:
+        copyTree c.dest, param
+      copyIntoSymUse c.dest, pool.syms.getOrIncl(VTableField), c.info
+      c.dest.addIntLit(0, c.info)
+    copyIntoKind c.dest, CallX, c.info:
+      copyIntoSymUse c.dest, getCompilerProc(c, "getRtti"), c.info
+      copyIntoSymUse c.dest, cls, c.info
+
+proc unravelDispatch(c: var LiftingCtx; orig: TypeCursor; paramA, paramB: TokenBuf) =
   #if isTrivial(c, typ):
   #  genTrivialOp c, paramA, paramB
   #  return
-  let typ = toTypeImpl typ
+  let typ = toTypeImpl orig
   case typ.typeKind
   of ObjectT:
+    if orig.kind == Symbol and hasRtti(orig.symId):
+      if c.op == attachedWasMoved:
+        # setup VTable field:
+        setupVTableField c, paramA, orig.symId
+      elif c.op in {attachedDestroy, attachedTrace}:
+        c.routineKind = MethodY
     unravelObj c, typ, paramA, paramB
   of DistinctT:
     unravelDispatch(c, typ.firstSon, paramA, paramB)
@@ -578,6 +657,9 @@ proc genProcDecl(c: var LiftingCtx; sym: SymId; typ: TypeCursor) =
       if c.dest.len == beforeUnravel:
         assert false, "empty hook created"
       maybeAddReturn c, paramA
+  # tell vtables.nim we need dynamic binding here:
+  if c.routineKind == MethodY:
+    c.dest[procStart] = parLeToken(MethodS, c.info)
 
   if c.calledErrorHook != NoLineInfo:
     c.dest.insert [parLeToken(ErrorP, c.calledErrorHook), parRiToken(c.calledErrorHook)], pragmasPos
@@ -590,14 +672,16 @@ proc genMissingHooks*(c: var LiftingCtx) =
     let reqs = move(c.requests)
     for i in 0 ..< reqs.len:
       c.op = reqs[i].op
+      c.routineKind = ProcY
       c.calledErrorHook = NoLineInfo
       genProcDecl(c, reqs[i].sym, reqs[i].typ)
 
 proc createLiftingCtx*(thisModuleSuffix: string, bits: int): ref LiftingCtx =
-  (ref LiftingCtx)(op: attachedDestroy, info: NoLineInfo, thisModuleSuffix: thisModuleSuffix, bits: bits)
+  (ref LiftingCtx)(op: attachedDestroy, info: NoLineInfo, thisModuleSuffix: thisModuleSuffix, bits: bits, routineKind: ProcY)
 
 proc getHook*(c: var LiftingCtx; op: AttachedOp; typ: TypeCursor; info: PackedLineInfo): SymId =
   c.op = op
+  c.routineKind = ProcY
   c.calledErrorHook = NoLineInfo
   c.info = info
   let t = if typ.typeKind == SinkT: typ.firstSon else: typ

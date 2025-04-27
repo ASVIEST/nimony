@@ -8,6 +8,14 @@ proc unpackToCall(fn: untyped) {.magic: Unpack.}
 
 const
   isMainModule* {.magic: "IsMainModule".}: bool = false
+  Inf* {.magic: "Inf".}: float64 = 0.0
+    ## Contains the IEEE floating point value of positive infinity.
+  NaN* {.magic: "NaN".}: float64 = 0.0
+    ## Contains an IEEE floating point value of *Not A Number*.
+    ##
+    ## Note that you cannot compare a floating point value to this value
+    ## and expect a reasonable result - use the `isNaN` or `classify` procedure
+    ## in the `math module <math.html>`_ for checking for NaN.
 
 proc `[]`*[T: tuple](x: T, i: int): untyped {.magic: "TupAt".}
 proc `[]`*[I, T](x: array[I, T], i: I): var T {.magic: "ArrAt".}
@@ -35,6 +43,53 @@ include "system/comparisons"
 
 proc defined*(x: untyped): bool {.magic: Defined.}
 proc declared*(x: untyped): bool {.magic: Declared.}
+
+const
+  # Use string literals for one digit numbers to avoid the allocations as they are so common.
+  NegTen = [
+    "-0", "-1", "-2", "-3", "-4",
+    "-5", "-6", "-7", "-8", "-9"]
+
+proc `$`*(x: uint64): string =
+  result = ""
+  if x < 10:
+    result = NegTen[int x].substr(1, 1)
+  else:
+    var y = x
+    while true:
+      result.add char((y mod 10'u) + uint('0'))
+      y = y div 10'u
+      if y == 0'u: break
+    let last = result.len-1
+    var i = 0
+    let b = result.len div 2
+    while i < b:
+      let ch = result[i]
+      result[i] = result[last-i]
+      result[last-i] = ch
+      inc i
+
+proc `$`*(x: int64): string =
+  if x < 0:
+    if x > -10:
+      result = NegTen[-x]
+    if x == -9223372036854775808:
+      result = "-" & $cast[uint64](x)
+    else:
+      result = "-" & $(0-x)
+  elif x < 10:
+    result.add char(x + int64('0'))
+  else:
+    result = $cast[uint64](x)
+
+proc addInt*(s: var string; x: int64) {.inline.} =
+  s.add $x
+
+proc addInt*(s: var string; x: uint64) {.inline.} =
+  s.add $x
+
+proc `$`*(b: bool): string =
+  if b: "true" else: "false"
 
 proc `$`*[T: enum](x: T): string {.magic: "EnumToStr", noSideEffect.}
   ## Converts an enum value to a string.
@@ -80,16 +135,17 @@ template `notin`*(x, y: untyped): untyped =
   not contains(y, x)
 
 include "system/iterators"
-
 include "system/defaults"
-
-include "system/stringimpl"
 
 include "system/countbits_impl"
 include "system/setops"
 
-include "system/openarrays"
+include "system/ctypes"
+
+include "system/memory"
 include "system/seqimpl"
+include "system/stringimpl"
+include "system/openarrays"
 
 include "system/atomics"
 
@@ -100,3 +156,33 @@ template runnableExamples*(body: untyped) {.untyped.} =
   discard "ignore runnable examples"
 
 proc overflowFlag*(): bool {.magic: "OverflowFlag".}
+
+include "system/panics"
+
+proc `of`*[T, S](x: T; y: typedesc[S]): bool {.magic: "Of", noSideEffect.}
+proc procCall*[T](x: T): untyped {.magic: "ProcCall".}
+
+type
+  Rtti* = object
+    dl: int
+    dy: ptr UncheckedArray[uint32]
+    mt: UncheckedArray[pointer]
+
+proc getRtti(dummy: pointer): ptr Rtti {.nodecl.} = discard "patched by vtables.nim"
+
+func ord*[T: Ordinal|enum](x: T): int {.inline.} =
+  ## Returns the internal `int` value of `x`, including for enum with holes
+  ## and distinct ordinal types.
+
+  int(x)
+
+type
+  ComparableAndNegatable = concept
+    proc `<`(x, y: Self): bool
+    proc `-`(x: Self): Self
+
+func abs*[T: ComparableAndNegatable](x: T): T {.inline.} =
+  ## Returns the absolute value of `x`.
+  if x < 0: -x else: x
+
+include "../../vendor/errorcodes/src" / errorcodes

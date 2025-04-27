@@ -89,14 +89,28 @@ proc open*(f: out File; filename: string;
     of fmReadWriteExisting: cstring"r+b"
     of fmAppend: cstring"ab"
 
-  var tmpFilename = filename
-  f = fopen(tmpFilename.toCString, m)
+  # XXX: avoid a possible double copy when the string is allocated
+  var tmpFilename = filename.terminatingZero()
+  let rawFilename = cast[cstring](tmpFilename.rawData)
+  f = fopen(rawFilename, m)
   if f != nil:
     result = true
     if bufSize >= 0:
       discard c_setvbuf(f, nil, IOFBF, cast[uint](bufSize))
   else:
     result = false
+
+proc open*(filename: string,
+            mode: FileMode = fmRead, bufSize: int = -1): File =
+  ## Opens a file named `filename` with given `mode`.
+  ##
+  ## Default mode is readonly. Raises an `IOError` if the file
+  ## could not be opened.
+  result = default(File)
+  if not open(result, filename, mode, bufSize):
+    # TODO: raise exception when it is supported.
+    #raise newException(IOError, "cannot open: " & filename)
+    quit "cannot open: " & filename
 
 template echo*() {.varargs.} =
   for x in unpack():
@@ -132,11 +146,6 @@ proc readLine*(f: File; s: var string): bool =
 proc exit(value: int32) {.importc: "exit", header: "<stdlib.h>".}
 proc quit*(value: int) = exit(value.int32)
 
-template assert*(cond: bool; msg = "") =
-  if not cond:
-    echo "[Assertion Failure] ", msg
-    quit 1
-
 proc quit*(msg: string) =
   echo msg
   quit 1
@@ -150,3 +159,5 @@ proc tryWriteFile*(file, content: string): bool =
       result = false
   else:
     result = false
+
+proc flushFile*(f: File) {.importc: "fflush", header: "<stdio.h>".}
