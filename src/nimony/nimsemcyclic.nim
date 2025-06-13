@@ -1,4 +1,4 @@
-## nimcyclicsem is part of semantic checker that used
+## nimsemcyclic is part of semantic checker that used
 ## before nimsem. It working for cyclic import group (realy SCC)
 ## Unfortunately, this requires restarting on the entire SCC,
 ## but fortunately SC is usually small (maximum of 3-4 modules)
