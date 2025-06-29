@@ -5,19 +5,81 @@
 ## and if ident can be exported in at least one branch, then it will be in public interface
 ## It also usefull for cyclic modules, partialsem should run on full SCC only if some of modules changed partial interface. 
 
-import std / [parseopt, strutils, assertions, os]
+import std / [parseopt, strutils, assertions, os, syncio]
 import ".." / lib / [nifstreams, nifcursors, bitabs, lineinfos, nifreader, nifbuilder]
-import ".." / nimony / nimony_model
+import ".." / nimony / [nimony_model, decls]
 
 type
   Context = object
-    b: Builder
+    dest: TokenBuf
 
-proc ifaceGen(c: var Context; n: var Cursor) =
-  c.b.addHeader "nimony", "nifface"
-  c.b.addTree("stmts")
+proc ifaceStmt(c: var Context; n: var Cursor) =
+  case n.stmtKind
+  of StmtsS:
+    inc n
+    while n.kind != ParRi:
+      ifaceStmt(c, n)
+    inc n # ParRi
+  of WhenS:
+    inc n
+    while n.kind != ParRi:
+      case n.substructureKind
+      of ElifU:
+        inc n # (elif
+        inc n # cond; it is max interface so not need testing cond
+        ifaceStmt(c, n)
+        inc n # ParRi
+      of ElseU:
+        inc n # (else
+        ifaceStmt(c, n)
+        inc n # ParRi
+      else:
+        echo n
+        quit "Invalid ast"
+    inc n # ParRi
+  of TypeS:
+    let decl = asTypeDecl(n)
+    
+    if decl.exported.kind != DotToken:
+      c.dest.buildTree(TagId(TypeS), n.info):
+        c.dest.add(decl.name.load)
+        c.dest.add(decl.exported.load)
+        c.dest.addSubtree(decl.typevars)
+        c.dest.addSubtree(decl.pragmas)
+        c.dest.addDotToken()
+    
+    skip n
+  elif n.symKind.isRoutine:
+    let decl = asRoutine(n)
 
-  c.b.endTree()
+    if decl.exported.kind != DotToken:
+      c.dest.buildTree(TagId(n.stmtKind), n.info):
+        c.dest.add(decl.name.load)
+        c.dest.add(decl.exported.load)
+
+        c.dest.addSubtree(decl.pattern)
+        c.dest.addSubtree(decl.typevars)
+        c.dest.addSubtree(decl.params)
+        c.dest.addSubtree(decl.retType)
+        c.dest.addSubtree(decl.pragmas)
+        c.dest.addSubtree(decl.effects)
+        c.dest.addDotToken()
+    
+    skip n
+  elif n.symKind.isLocal:
+    let decl = asLocal(n) # no way to enter local scope, so it's in global
+
+    if decl.exported.kind != DotToken:
+      c.dest.buildTree(TagId(n.stmtKind), n.info):
+        c.dest.add(decl.name.load)
+        c.dest.add(decl.exported.load)
+        c.dest.addSubtree(decl.pragmas)
+        c.dest.add(decl.typ.load)
+        c.dest.addDotToken()
+    
+    skip n
+  else:
+    skip n
 
 proc processNifFile(filename: string, outputFilename: string) =
   if not fileExists(filename):
@@ -32,10 +94,12 @@ proc processNifFile(filename: string, outputFilename: string) =
   var n = beginRead(buf)
   defer: endRead(buf)
 
-  var b = nifbuilder.open(outputFilename)
-  var c = Context(b: b)
-  c.ifaceGen(n)
-  c.b.close()
+  var c = Context(dest: createTokenBuf())
+  
+  c.dest.buildTree TagId(StmtsS), NoLineInfo:
+    ifaceStmt(c, n)
+  
+  writeFile outputFilename, "(.nif24)\n" & toString(c.dest)
 
 type
   Command = enum
