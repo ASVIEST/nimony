@@ -46,7 +46,7 @@ proc ifaceStmt(c: var Context; n: var Cursor) =
         c.dest.add(decl.exported.load)
         c.dest.addSubtree(decl.typevars)
         c.dest.addSubtree(decl.pragmas)
-        c.dest.addDotToken()
+        c.dest.addSubtree(decl.body)
     
     skip n
   elif n.symKind.isRoutine:
