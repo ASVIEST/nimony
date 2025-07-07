@@ -67,14 +67,15 @@ proc getVTableName(c: var Context; cls: SymId): SymId =
     c.vtableNames[cls] = result
 
 proc trProcDecl(c: var Context; dest: var TokenBuf; n: var Cursor) =
+  let decl = n
   var r = asRoutine(n)
   c.typeCache.openScope()
   copyInto(dest, n):
-    let isConcrete = c.typeCache.takeRoutineHeader(dest, n)
+    let isConcrete = c.typeCache.takeRoutineHeader(dest, decl, n)
     if isConcrete:
       let symId = r.name.symId
       if isLocalDecl(symId):
-        c.typeCache.registerLocal(symId, r.kind, r.params)
+        c.typeCache.registerLocal(symId, r.kind, decl)
       tr c, dest, n
     else:
       takeTree dest, n
@@ -150,7 +151,37 @@ proc isMethod(c: var Context; s: SymId): bool =
     let info = getLocalInfo(c.typeCache, s)
     result = info.kind == MethodY
 
+proc loadVTable(c: var Context; cls: SymId) =
+  # Interface files only store the "diff" of the vtable so we need to
+  # compute it properly here.
+  var parent = SymId(0)
+  for inh in inheritanceChain(cls):
+    if parent == SymId(0): parent = inh
+    if inh notin c.vtables:
+      loadVTable c, inh
+
+  # now apply the diff:
+  let diff = programs.loadVTable(cls)
+  var dest = VTable(display: @[], methods: @[], state: Others)
+  if parent != SymId(0):
+    dest.methods = c.vtables[parent].methods
+    dest.signatureToIndex = c.vtables[parent].signatureToIndex
+
+  for entry in diff:
+    let sig = pool.strings[entry.signature]
+    let idx = dest.signatureToIndex.getOrDefault(sig, -1)
+    if idx == -1:
+      dest.methods.add entry.fn
+      dest.signatureToIndex[sig] = dest.methods.len - 1
+    else:
+      dest.methods[idx] = entry.fn
+
+  c.vtables[cls] = ensureMove dest
+
 proc getMethodIndex(c: var Context; cls, fn: SymId): int =
+  if not c.vtables.hasKey(cls):
+    c.loadVTable(cls)
+
   result = c.vtables[cls].methods.find(fn)
   if result == -1:
     error "method `" & pool.syms[fn] & "` not found in class " & pool.syms[cls]
@@ -160,7 +191,6 @@ proc isLocalVar(c: var Context; n: Cursor): bool {.inline.} =
 
 proc genProctype(c: var Context; dest: var TokenBuf; typ: Cursor) =
   dest.addParLe ProctypeT, NoLineInfo
-  # This is really stupid...
   dest.addDotToken() # name
   dest.addDotToken() # export marker
   dest.addDotToken() # pattern
@@ -189,7 +219,7 @@ proc genVtableField(c: var Context; dest: var TokenBuf; x: Cursor; class: ClassI
 
 proc trMethodCall(c: var Context; dest: var TokenBuf; n: var Cursor) =
   let fnNode = n.load()
-  let fnType = getType(c.typeCache, n)
+  var fnType = getType(c.typeCache, n)
   assert fnType.typeKind != AutoT
   let fn = n.symId
   inc n # skip fn
@@ -205,6 +235,10 @@ proc trMethodCall(c: var Context; dest: var TokenBuf; n: var Cursor) =
   else:
     let info = n.info
     var temp = evalOnce(c, dest, n)
+
+    if fnType.typeKind in RoutineTypes:
+      inc fnType
+      for i in 1..4: skip fnType
 
     var paramList = fnType
     assert paramList.substructureKind == ParamsU
@@ -244,6 +278,9 @@ proc trMethodCall(c: var Context; dest: var TokenBuf; n: var Cursor) =
     tr c, dest, n
 
 proc maybeImport(c: var Context; cls, vtabName: SymId) =
+  if not c.vtables.hasKey(cls):
+    c.loadVTable(cls)
+
   let state = c.vtables[cls].state
   if state == Others:
     c.vtables[cls].state = AlreadyImported
@@ -622,33 +659,6 @@ proc processMethod(c: var Context; m: MethodDecl; methodName: string) =
   let idx = c.vtables[m.cls].methods.len
   c.vtables[m.cls].methods.add m.name
   c.vtables[m.cls].signatureToIndex[sig] = idx
-
-proc loadVTable(c: var Context; cls: SymId) =
-  # Interface files only store the "diff" of the vtable so we need to
-  # compute it properly here.
-  var parent = SymId(0)
-  for inh in inheritanceChain(cls):
-    if parent == SymId(0): parent = inh
-    if inh notin c.vtables:
-      loadVTable c, inh
-
-  # now apply the diff:
-  let diff = programs.loadVTable(cls)
-  var dest = VTable(display: @[], methods: @[], state: Others)
-  if parent != SymId(0):
-    dest.methods = c.vtables[parent].methods
-    dest.signatureToIndex = c.vtables[parent].signatureToIndex
-
-  for entry in diff:
-    let sig = pool.strings[entry.signature]
-    let idx = dest.signatureToIndex.getOrDefault(sig, -1)
-    if idx == -1:
-      dest.methods.add entry.fn
-      dest.signatureToIndex[sig] = dest.methods.len - 1
-    else:
-      dest.methods[idx] = entry.fn
-
-  c.vtables[cls] = ensureMove dest
 
 proc processMethods(c: var Context) =
   # Methods are fundamentally different from other type-bound symbols in

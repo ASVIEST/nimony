@@ -12,7 +12,7 @@ proc semProcBody(c: var SemContext; itB: var Item) =
       beforeLastSon = c.dest.len
       lastSonInfo = it.n.info
       beforeLastSonCursor = it.n
-      semExpr c, it
+      semExpr c, it, {AllowEmpty}
   if c.routine.kind == TemplateY:
     case c.routine.returnType.typeKind
     of UntypedT:
@@ -87,14 +87,20 @@ proc semLocal(c: var SemContext; n: var Cursor; kind: SymKind) =
     if n.kind == DotToken:
       # no explicit type given:
       inc n # 3
+      let orig = n
       var it = Item(n: n, typ: c.types.autoType)
       if kind == ConstY:
         withNewScope c:
           semConstExpr c, it # 4
+      elif kind == ParamY and n.kind == DotToken and delayed.lit in c.usingStmtMap:
+        it.typ = c.usingStmtMap[delayed.lit]
+        c.dest.takeToken it.n
       else:
         semLocalValue c, it, crucial # 4
       n = it.n
       let typ = skipModifier(it.typ)
+      if classifyType(c, typ) == VoidT:
+         c.buildErr n.info, "expression '" & asNimCode(orig) & "' has no type (or is ambiguous)"
       insertType c, typ, beforeType
     else:
       let typ = semLocalType(c, n) # 3
@@ -271,7 +277,7 @@ proc getParamsType(c: var SemContext; paramsAt: int): seq[TypeCursor] =
   result = @[]
   if c.dest[paramsAt].kind != DotToken:
     var n = cursorAt(c.dest, paramsAt)
-    if n.typeKind == ParamsT:
+    if n.substructureKind == ParamsU:
       inc n
       while n.kind != ParRi:
         if n.symKind == ParamY:
@@ -484,12 +490,21 @@ proc hookThatShouldBeMethod(c: var SemContext; hk: HookKind; beforeParams: int):
   else:
     result = false
 
-proc semProc(c: var SemContext; it: var Item; kind: SymKind; pass: PassKind) =
+proc semProcImpl(c: var SemContext; it: var Item; kind: SymKind; pass: PassKind; newName = NoSymId) =
   let info = it.n.info
   let declStart = c.dest.len
   takeToken c, it.n
   let beforeName = c.dest.len
-  let (symId, status) = declareOverloadableSym(c, it, kind)
+
+  let symId: SymId
+  let status: SymStatus
+  if it.n.kind == DotToken:
+    symId = newName
+    status = OkNew
+    c.dest.add symdefToken(symId, it.n.info)
+    inc it.n
+  else:
+    (symId, status) = declareOverloadableSym(c, it, kind)
 
   let beforeExportMarker = c.dest.len
   wantExportMarker c, it.n
@@ -628,8 +643,30 @@ proc semProc(c: var SemContext; it: var Item; kind: SymKind; pass: PassKind) =
   finally:
     c.routine = c.routine.parent
   takeParRi c, it.n
-  producesVoid c, info, it.typ
+  if newName == NoSymId:
+    producesVoid c, info, it.typ
   publish c, symId, declStart
+
+proc semProc(c: var SemContext; it: var Item; kind: SymKind; pass: PassKind) =
+  if it.n.firstSon.kind == DotToken:
+    # anon routine
+    let info = it.n.firstSon.info
+    let name = identToSym(c, "`anonproc", ProcY)
+
+    var anons = createTokenBuf()
+    swap c.dest, anons
+    semProcImpl c, it, kind, pass, name
+    swap c.dest, anons
+    let insertPos = c.pending.len
+    c.dest.add parLeToken(ExprX, info)
+    let anonTypePos = c.dest.len
+    c.dest.add anons
+    c.dest.add symToken(name, info)
+    c.dest.addParRi()
+    it.typ = typeToCursor(c, c.dest, anonTypePos)
+
+  else:
+    semProcImpl c, it, kind, pass
 
 proc semTypePragmas(c: var SemContext; n: var Cursor; sym: SymId; beforeExportMarker: int): CrucialPragma =
   result = CrucialPragma(sym: sym)
@@ -934,3 +971,48 @@ proc semUnpackDecl(c: var SemContext; it: var Item) =
   skipParRi it.n # close unpacktup
   skipParRi it.n # close unpackdecl
   producesVoid c, info, it.typ
+
+proc semUsing(c: var SemContext; n: var Cursor) =
+  takeToken c, n
+  while n.kind != ParRi:
+    assert n.substructureKind == FldU
+    takeToken c, n
+    var ident = StrId(0)
+    if n.kind == Ident:
+      ident = n.litId
+      takeToken c, n
+    else:
+      c.buildErr n.info, "identifier is expected", n
+      skip n
+
+    # export marker
+    if n.kind == DotToken:
+      takeToken c, n
+    else:
+      c.buildErr n.info, "identifiers under using statements cannot be exported", n
+      skip n
+
+    # pragma
+    # currently no pragmas can be used in using statements
+    if n.kind == DotToken:
+      takeToken c, n
+    elif n.substructureKind == PragmasU:
+      c.buildErr n.info, "using statements supports no pragmas", n
+      skip n
+    else:
+      c.buildErr n.info, "illformed AST inside using statement", n
+      skip n
+
+    let typ = semLocalType(c, n)
+    if ident != StrId(0):
+      c.usingStmtMap[ident] = typ
+
+    if n.kind == DotToken:
+      takeToken c, n
+    else:
+      c.buildErr n.info, "illformed AST inside using statement", n
+      skip n
+
+    takeParRi c, n
+
+  takeParRi c, n

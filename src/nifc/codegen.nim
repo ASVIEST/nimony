@@ -68,6 +68,8 @@ type
     ErrToken = "NIFC_ERR_"
     OvfToken = "NIFC_OVF_"
     ThreadVarToken = "NIM_THREADVAR "
+    AnonStruct = "struct "
+    AnonUnion = "union "
 
 proc fillTokenTable(tab: var BiTable[Token, string]) =
   for e in EmptyToken..high(PredefinedToken):
@@ -235,7 +237,7 @@ proc genProcPragmas(c: var GeneratedCode; n: var Cursor;
     inc n
     while n.kind != ParRi:
       case n.pragmaKind
-      of NoPragma, AlignP, BitsP, VectorP, NodeclP, StaticP:
+      of NoPragma, AlignP, BitsP, VectorP, NodeclP, StaticP, PackedP:
         if n.callConvKind != NoCallConv:
           skip n
         else:
