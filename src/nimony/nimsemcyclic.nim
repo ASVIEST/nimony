@@ -30,11 +30,63 @@
 ##    and you have [a.buz, b.bar, a.foo] - correct initalize list
 ##    create .init.nif
 ##    final.
+##
+## type A = object
+##   b: B
+## 
+## type B = ref object
+##   a: A
+## graph: A -> B; B -> A
 
-import std / [parseopt, strutils, assertions]
 
-proc processScc(filenames: seq[string], outputFilename: string) =
-  discard
+import std / [parseopt, strutils, assertions, syncio, tables]
+import ".." / lib / [nifstreams, nifcursors, bitabs, lineinfos, nifreader, nifbuilder]
+import ".." / nimony / [nimony_model, decls, symtabs, programs, sem, semos, semdata]
+
+type
+  Context = object
+    dest: TokenBuf
+    globals: Table[string, int]
+    thisModuleSuffix: string
+    sem: SemContext # Need for type sem etc.
+
+proc graphStmt(c: var Context; n: var Cursor) =
+  # 1. make dependence graph + 
+  case n.stmtKind
+  of StmtsS:
+    inc n
+    while n.kind != ParRi:
+      graphStmt(c, n)
+    inc n # ParRi
+  of TypeS:
+    let decl = asTypeDecl(n)
+    skip n
+  else:
+    echo n
+    skip n
+
+proc processSccFile(c: var Context, fileName: string) =
+  var stream = nifstreams.open(filename)
+  defer: nifstreams.close(stream)
+
+  discard processDirectives(stream.r)
+
+  var buf = fromStream(stream)
+  var n = beginRead(buf)
+  defer: endRead(buf)
+
+  let (_, file, _) = splitModulePath(fileName)
+  c.thisModuleSuffix = file # just as in setupProgram prog.main
+  graphStmt(c, n)
+
+proc processScc(fileNames: seq[string], outputFilename: string) =
+  var c = Context(dest: createTokenBuf())
+
+  c.dest.buildTree TagId(StmtsS), NoLineInfo:
+    for fileName in fileNames:
+      c.processSccFile(fileName)
+  
+  writeFile outputFilename, "(.nif24)\n" & toString(c.dest)
 
 type
   Command = enum
