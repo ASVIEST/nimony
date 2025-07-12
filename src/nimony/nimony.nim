@@ -29,6 +29,7 @@ Usage:
   nimony [options] [command]
 Command:
   c project.nim               compile the full project
+  wasm project.nim            compile the full project to wasm
   check project.nim           check the full project for errors; can be
                               combined with `--usages`, `--def` for
                               editor integration
@@ -108,6 +109,7 @@ type
     passC: string
     passL: string
     executableArgs: string
+    target: string
 
 proc createCmdOptions(baseDir: sink string): CmdOptions =
   CmdOptions(
@@ -126,7 +128,8 @@ proc createCmdOptions(baseDir: sink string): CmdOptions =
     passL: "",
     checkModes: DefaultSettings,
     forwardArgsToExecutable: false,
-    executableArgs: ""
+    executableArgs: "",
+    target: "c"
   )
 
 proc handleCmdLine(c: var CmdOptions; cmdLineArgs: seq[string]; mode: CmdMode) =
@@ -134,7 +137,11 @@ proc handleCmdLine(c: var CmdOptions; cmdLineArgs: seq[string]; mode: CmdMode) =
     case kind
     of cmdArgument:
       if c.cmd == None:
-        c.cmd = dispatchBasicCommand(key)
+        if key.normalize == "wasm":
+          c.cmd = FullProject
+          c.target = "wasm"
+        else:
+          c.cmd = dispatchBasicCommand(key)
       else:
         if c.forwardArgsToExecutable:
           c.executableArgs.add " " & quoteShell(key)
@@ -265,12 +272,12 @@ proc compileProgram(c: var CmdOptions) =
     # compile full project modules
     buildGraph c.config, c.args[0], c.forceRebuild, c.silentMake,
       c.commandLineArgs, c.commandLineArgsNifc, c.moduleFlags, (if c.doRun: DoRun else: DoCompile),
-      c.passC, c.passL, c.executableArgs
+      c.passC, c.passL, c.executableArgs, c.target
   of CheckProject:
     createDir(c.config.nifcachePath)
     # check full project modules
     buildGraph c.config, c.args[0], c.forceRebuild, c.silentMake,
-      c.commandLineArgs, c.commandLineArgsNifc, c.moduleFlags, DoCheck, c.passC, c.passL, c.executableArgs
+      c.commandLineArgs, c.commandLineArgsNifc, c.moduleFlags, DoCheck, c.passC, c.passL, c.executableArgs, c.target
 
 when isMainModule:
   var c = createCmdOptions(determineBaseDir())
