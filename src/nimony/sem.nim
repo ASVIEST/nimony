@@ -1374,13 +1374,22 @@ proc semPragma(c: var SemContext; n: var Cursor; crucial: var CrucialPragma; kin
     c.dest.addParRi()
     inc n
   of ViewP, InheritableP, PureP, FinalP, PackedP, UnionP:
-    if kind == TypeY:
+    var hasErr = false
+    if kind != TypeY:
+      buildErr c, n.info, $pk & " pragma is only allowed on types"
+      hasErr = true
+    elif pk in {ViewP, InheritableP, FinalP, PackedP, UnionP}:
+      var n2 = n
+      skipToEnd n2
+      if n2.typeKind in {RefT, PtrT}:
+        inc n2
+      if n2.typeKind != ObjectT:
+        buildErr c, n.info, $pk & " pragma is only allowed on object types", n
+        hasErr = true
+    if not hasErr:
       c.dest.add parLeToken(pk, n.info)
-      inc n
-    else:
-      buildErr c, n.info, "pragma only allowed on types"
-      inc n
-    c.dest.addParRi()
+      c.dest.addParRi()
+    inc n
   of CursorP:
     if kind in {VarY, LetY, CursorY}:
       c.dest.add parLeToken(pk, n.info)
@@ -2910,60 +2919,150 @@ proc buildObjConstrField(c: var SemContext; field: Local;
       c.dest.addIntLit(depth, info)
     c.dest.addParRi()
 
-proc fieldsPresentInInitExpr(c: var SemContext; n: Cursor; setFields: Table[SymId, Cursor]): bool =
+proc fieldsPresentInInitExpr(c: var SemContext; n: Cursor; setFields: Table[SymId, Cursor]): (bool, SymId) =
   var n = n
   inc n
-  result = false
+  result = (false, SymId(0))
   if n.substructureKind == NilU:
     return
   while n.kind != ParRi:
     let local = takeLocal(n, SkipFinalParRi)
     if local.name.symId in setFields:
-      result = true
+      result = (true, local.name.symId)
       break
 
-proc fieldsPresentInBranch(c: var SemContext; n: var Cursor;
+proc asNimSym(symId: SymId): string =
+  result = pool.syms[symId]
+  extractBasename(result)
+
+template conflictingBranchesError(c: var SemContext, info: PackedLineInfo, prevFields: SymId, currentFields: SymId) = 
+  c.buildErr info, "The fields '" & asNimSym(prevFields) & 
+              "' and '" & asNimSym(currentFields) & "' cannot be initialized together, " &
+              "because they are from conflicting branches in the case object."
+
+template badDiscriminatorError(c: var SemContext, info: PackedLineInfo, field: SymId, discriminator: SymId) =
+  c.buildErr info, 
+    ("cannot prove that it's safe to initialize '$1' with " &
+    "the runtime value for the discriminator '$2'.") %
+    [asNimSym(field), asNimSym(discriminator)]
+
+template wrongBranchError(c: var SemContext, info: PackedLineInfo, field: SymId,
+      discriminator: SymId, discriminatorVal: Cursor) =
+  c.buildErr info,
+      ("a case selecting discriminator '$1' with value '$2' " &
+      "appears in the object construction, but the field(s) '$3' " &
+      "are in conflict with this value.") %
+      [asNimSym(discriminator), asNimCode(discriminatorVal), asNimSym(field)]
+
+proc caseBranchMatchesExpr(c: var SemContext; branch, matched: Cursor; selectorType: Cursor): bool =
+  result = false
+  var branch = branch
+  inc branch
+  while branch.kind != ParRi:
+    case branch.substructureKind
+    of RangeU:
+      inc branch
+      let a = evalConstIntExpr(c, branch, selectorType)
+      let b = evalConstIntExpr(c, branch, selectorType)
+
+      var matched = matched
+      let value = evalConstIntExpr(c, matched, selectorType)
+      if value >= a and value <= b:
+        return true
+      skipParRi(branch)
+    else:
+      return sameTrees(branch, matched)
+
+type
+  BranchState = enum
+    NoSelector
+    Unknown
+    ThisBranch
+
+proc getValueInKv(n: Cursor): Cursor =
+  result = n
+  inc result
+  skip result
+
+proc fieldsPresentInBranch(c: var SemContext; n: var Cursor; selector: Local;
                 setFields: Table[SymId, Cursor]; info: PackedLineInfo;
                 bindings: Table[SymId, Cursor]; depth: int) =
-  var branches = 0
+  var lastFieldSymId = SymId(0)
+  var isBranchSelected = false
+  let selectorSymId = selector.name.symId
+
+  var bestBranch = default(Cursor)
   block matched:
     while n.kind != ParRi:
       case n.substructureKind
       of OfU:
         inc n
+        var state: BranchState
+        if selectorSymId in setFields:
+          let discriminatorVal = getValueInKv(setFields[selectorSymId])
+          if caseBranchMatchesExpr(c, n, discriminatorVal, selector.typ):
+            state = ThisBranch
+            isBranchSelected = true
+          else:
+            state = Unknown
+        else:
+          state = NoSelector
         skip n
-        let hasField = fieldsPresentInInitExpr(c, n, setFields)
+
+        if bestBranch == default(Cursor):
+          bestBranch = n
+        let (hasField, presentFieldSymId) = fieldsPresentInInitExpr(c, n, setFields)
         if hasField:
+          if lastFieldSymId != SymId(0):
+            conflictingBranchesError c, info, lastFieldSymId, presentFieldSymId
+          elif state == Unknown:
+            wrongBranchError(c, info, presentFieldSymId, selectorSymId, getValueInKv(setFields[selectorSymId]))
           inc n # stmt
           while n.kind != ParRi:
             let field = takeLocal(n, SkipFinalParRi)
             buildObjConstrField(c, field, setFields, info, bindings, depth)
           skipParRi n
-          inc branches
+          lastFieldSymId = presentFieldSymId
         else:
           skip n
 
         skipParRi n
       of ElseU:
         inc n
-        let hasField = fieldsPresentInInitExpr(c, n, setFields)
+        let (hasField, presentFieldSymId) = fieldsPresentInInitExpr(c, n, setFields)
         if hasField:
+          if lastFieldSymId != SymId(0):
+            conflictingBranchesError c, info, lastFieldSymId, presentFieldSymId
+          elif isBranchSelected and selectorSymId in setFields:
+            wrongBranchError(c, info, presentFieldSymId, selectorSymId, getValueInKv(setFields[selectorSymId]))
           inc n # stmt
           while n.kind != ParRi:
             let field = takeLocal(n, SkipFinalParRi)
             buildObjConstrField(c, field, setFields, info, bindings, depth)
           skipParRi n # stmt
-          inc branches
+          lastFieldSymId = presentFieldSymId
         else:
           skip n
         skipParRi n
       else:
         error "illformed AST inside case object: ", n
 
+  if selectorSymId notin setFields:
+    if lastFieldSymId != SymId(0):
+      badDiscriminatorError(c, info, lastFieldSymId, selectorSymId)
+    elif bestBranch != default(Cursor):
+      inc bestBranch # stmt
+      while bestBranch.kind != ParRi:
+        if bestBranch.substructureKind == NilU:
+          skip bestBranch
+          break
+        let field = takeLocal(bestBranch, SkipFinalParRi)
+        buildObjConstrField(c, field, setFields, info, bindings, depth)
+      skipParRi bestBranch
+
 proc buildObjConstrFields(c: var SemContext; n: var Cursor;
                           setFields: Table[SymId, Cursor]; info: PackedLineInfo;
                           bindings: Table[SymId, Cursor]; depth = 0) =
-  # XXX for now counts each case object field as separate
   var iter = initObjFieldIter()
   while nextField(iter, n, keepCase = true):
     if n.substructureKind == CaseU:
@@ -2973,7 +3072,7 @@ proc buildObjConstrFields(c: var SemContext; n: var Cursor;
       let field = takeLocal(body, SkipFinalParRi)
       buildObjConstrField(c, field, setFields, info, bindings, depth)
 
-      fieldsPresentInBranch(c, body, setFields, info, bindings, depth)
+      fieldsPresentInBranch(c, body, field, setFields, info, bindings, depth)
       skip n
     else:
       let field = takeLocal(n, SkipFinalParRi)
@@ -3321,6 +3420,81 @@ proc semDeclared(c: var SemContext; it: var Item) =
     let expected = it.typ
     it.typ = c.types.boolType
     commonType c, it, beforeExpr, expected
+
+proc reportErrors(c: var SemContext): int =
+  result = reporters.reportErrors(c.dest)
+
+proc hasError(dest: TokenBuf): bool =
+  let errTag = pool.tags.getOrIncl("err")
+  var i = 0
+  result = false
+  while i < dest.len:
+    if dest[i].kind == ParLe and dest[i].tagId == errTag:
+      result = true
+      break
+    else:
+      inc i
+
+proc semCompiles(c: var SemContext; it: var Item) =
+  inc it.n
+  let info = it.n.info
+
+  let beforeExpr = c.dest.len
+
+  let oldScope = c.currentScope
+  let oldProcRequestsLen = c.procRequests.len
+  let oldTypeInstDeclsLen = c.typeInstDecls.len
+  let oldInstantiatedFrom = c.instantiatedFrom.len
+  let oldInWhen = c.inWhen
+  let oldTemplateInstCounter = c.templateInstCounter
+  let oldPending = c.pending.len
+  let oldIncludeStackLen = c.includeStack.len
+  let oldDebugAllowErrors = c.debugAllowErrors
+  c.debugAllowErrors = true
+
+  c.openScope()
+  var arg = Item(n: it.n, typ: c.types.autoType)
+  semExpr(c, arg)
+
+  c.currentScope = oldScope
+
+  let hasError = hasError(c.dest)
+  shrink c.dest, beforeExpr
+  c.currentScope = oldScope
+  c.procRequests.setLen(oldProcRequestsLen)
+  c.typeInstDecls.setLen(oldTypeInstDeclsLen)
+  c.instantiatedFrom.setLen(oldInstantiatedFrom)
+  c.includeStack.setLen(oldIncludeStackLen)
+
+  c.inWhen = oldInWhen
+  c.templateInstCounter = oldTemplateInstCounter
+  c.pending.shrink(oldPending)
+  c.debugAllowErrors = oldDebugAllowErrors
+
+
+  skip it.n
+  skipParRi(it.n)
+
+  let expected = it.typ
+  c.dest.addParLe(if hasError: FalseX else: TrueX, info)
+  c.dest.addParRi()
+  it.typ = c.types.boolType
+  commonType c, it, beforeExpr, expected
+
+
+proc semAstToStr(c: var SemContext; it: var Item) =
+  inc it.n
+  let info = it.n.info
+  let astStr = asNimCode(it.n)
+  skip it.n
+  skipParRi it.n
+
+  let beforeExpr = c.dest.len
+  c.dest.addStrLit(astStr, info)
+
+  let expected = it.typ
+  it.typ = c.types.stringType
+  commonType c, it, beforeExpr, expected
 
 proc semIsMainModule(c: var SemContext; it: var Item) =
   let info = it.n.info
@@ -4426,7 +4600,9 @@ proc semExpr(c: var SemContext; it: var Item; flags: set[SemFlag] = {}) =
           semRaise c, it
       of CommentS:
         # XXX ignored for now
+        let info = it.n.info
         skip it.n
+        producesVoid c, info, it.typ
       of EmitS:
         pragmaGuard c:
           semEmit c, it
@@ -4521,6 +4697,8 @@ proc semExpr(c: var SemContext; it: var Item; flags: set[SemFlag] = {}) =
       semDefined c, it
     of DeclaredX:
       semDeclared c, it
+    of AstToStrX:
+      semAstToStr c, it
     of IsMainModuleX:
       semIsMainModule c, it
     of AtX:
@@ -4584,8 +4762,12 @@ proc semExpr(c: var SemContext; it: var Item; flags: set[SemFlag] = {}) =
       semIs c, it
     of TabconstrX:
       semTableConstructor c, it, flags
-    of CurlyatX, DoX,
-       CompilesX, AlignofX, OffsetofX:
+    of DoX:
+      procGuard c:
+        semDo c, it, whichPass(c)
+    of CompilesX:
+      semCompiles c, it
+    of CurlyatX, AlignofX, OffsetofX:
       # XXX To implement
       buildErr c, it.n.info, "to implement: " & $exprKind(it.n)
       takeToken c, it.n
@@ -4596,8 +4778,6 @@ proc semExpr(c: var SemContext; it: var Item; flags: set[SemFlag] = {}) =
   of ParRi, EofToken, SymbolDef, UnknownToken, DotToken:
     buildErr c, it.n.info, "expression expected"
 
-proc reportErrors(c: var SemContext): int =
-  result = reporters.reportErrors(c.dest)
 
 proc buildIndexExports(c: var SemContext): TokenBuf =
   if c.exports.len == 0:

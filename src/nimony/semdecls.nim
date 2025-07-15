@@ -145,6 +145,10 @@ proc semEnumField(c: var SemContext; n: var Cursor; state: var EnumTypeState) =
     # XXX original nim always injects enum fields regardless of the enum sym itself,
     # this does the same here
     delayed.status = OkNew
+  if state.declaredNames.contains delayed.lit:
+    delayed.status = ErrRedef
+  else:
+    state.declaredNames.incl delayed.lit
   let beforeExportMarker = c.dest.len
   if n.kind == DotToken:
     if state.isExported:
@@ -211,8 +215,11 @@ proc semEnumField(c: var SemContext; n: var Cursor; state: var EnumTypeState) =
           state.thisValue = explicitValue
         c.dest.add strToken(delayed.lit, n.info)
         c.dest.addParRi()
-  c.addSym delayed
   takeParRi c, n
+  if delayed.status == OkNew:
+    addOverloadable(c.currentScope, delayed.lit, delayed.s)
+  elif delayed.status == ErrRedef:
+    c.buildErr delayed.info, "attempt to redeclare: " & pool.strings[delayed.lit]
   publish c, delayed.s.name, declStart
 
 proc semGenericParam(c: var SemContext; n: var Cursor) =
@@ -547,7 +554,7 @@ proc semProcImpl(c: var SemContext; it: var Item; kind: SymKind; pass: PassKind;
       buildErr c, it.n.info, "`effects` must be empty"
       skip it.n
 
-    publishSignature c, symId, declStart
+    publishSignature c.dest, symId, declStart
     let hookName = getHookName(symId)
     let hk = hookToKind(hookName)
     if status in {OkNew, OkExistingFresh}:
@@ -657,7 +664,6 @@ proc semProc(c: var SemContext; it: var Item; kind: SymKind; pass: PassKind) =
     swap c.dest, anons
     semProcImpl c, it, kind, pass, name
     swap c.dest, anons
-    let insertPos = c.pending.len
     c.dest.add parLeToken(ExprX, info)
     let anonTypePos = c.dest.len
     c.dest.add anons
@@ -1016,3 +1022,22 @@ proc semUsing(c: var SemContext; n: var Cursor) =
     takeParRi c, n
 
   takeParRi c, n
+
+proc semDo(c: var SemContext; it: var Item; pass: PassKind) =
+  let info = it.n.info
+  inc it.n
+  var anons = createTokenBuf()
+  # transform the do notation to an anon proc
+  anons.addParLe(ProcS, info)
+  anons.addEmpty info # name
+  anons.addEmpty3 info # export, pattern, typevars
+  anons.takeTree it.n  # params
+  anons.takeTree it.n  # return type
+  anons.addEmpty info  # pragma
+  anons.addEmpty info  # effects
+  anons.takeTree it.n  # body
+  anons.takeParRi it.n
+  var anonIt = Item(n: beginRead(anons), typ: it.typ)
+  semProc c, anonIt, ProcY, pass
+  endRead anons
+  it.typ = anonIt.typ

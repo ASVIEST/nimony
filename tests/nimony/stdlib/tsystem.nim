@@ -27,3 +27,16 @@ assert abs(-1) == 1
 assert abs(0.0) == 0.0
 assert abs(0.1) == 0.1
 assert abs(-0.1) == 0.1
+
+
+let guten = astToStr:
+  let s = 12
+  let m = 23
+
+assert guten == """
+
+let s: int = 12
+let m: int = 23"""
+
+assert not compiles(3 + "1" + 4)
+assert compiles(3 + 4)

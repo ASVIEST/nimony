@@ -270,8 +270,11 @@ proc evalLeftHandSide(c: var Context; le: var Cursor): TokenBuf =
       copyIntoSymUse result, tmp, info
     c.typeCache.registerLocalPtrOf(tmp, VarY, typ)
 
-proc callDestroy(c: var Context; destroyProc: SymId; arg: TokenBuf) =
+proc callDestroy(c: var Context; destroyProc: SymId; arg: TokenBuf; typ: Cursor) =
   let info = arg[0].info
+  let staticCall = typ.typeKind notin {RefT, PtrT}
+  if staticCall:
+    c.dest.addParLe ProcCallX, info
   copyIntoKind c.dest, CallS, info:
     copyIntoSymUse c.dest, destroyProc, info
     if isMutFirstParam(destroyProc):
@@ -279,11 +282,18 @@ proc callDestroy(c: var Context; destroyProc: SymId; arg: TokenBuf) =
         copyTree c.dest, arg
     else:
       copyTree c.dest, arg
+  if staticCall:
+    c.dest.addParRi()
 
-proc callDestroy(c: var Context; destroyProc: SymId; arg: SymId; info: PackedLineInfo) =
+proc callDestroy(c: var Context; destroyProc: SymId; arg: SymId; info: PackedLineInfo; typ: Cursor) =
+  let staticCall = typ.typeKind notin {RefT, PtrT}
+  if staticCall:
+    c.dest.addParLe ProcCallX, info
   copyIntoKind c.dest, CallS, info:
     copyIntoSymUse c.dest, destroyProc, info
     copyIntoSymUse c.dest, arg, info
+  if staticCall:
+    c.dest.addParRi()
 
 proc tempOfTrArg(c: var Context; n: Cursor; typ: Cursor): SymId =
   var n = n
@@ -381,7 +391,7 @@ proc trAsgn(c: var Context; n: var Cursor) =
       if not potentialAliasing(le, ri):
         # `x = f()` is turned into `=destroy(x); x =bitcopy f()`.
         if isNotFirstAsgn:
-          callDestroy(c, destructor, lhs)
+          callDestroy(c, destructor, lhs, leType)
         copyInto c.dest, n:
           copyTree c.dest, lhs
           n = ri
@@ -390,7 +400,7 @@ proc trAsgn(c: var Context; n: var Cursor) =
         # `x = f()` is turned into `let tmp = f(); =destroy(x); x =bitcopy tmp`.
         let tmp = tempOfTrArg(c, ri, leType)
         if isNotFirstAsgn:
-          callDestroy(c, destructor, lhs)
+          callDestroy(c, destructor, lhs, leType)
         copyInto c.dest, n:
           copyTree c.dest, lhs
           copyIntoSymUse c.dest, tmp, ri.info
@@ -401,7 +411,7 @@ proc trAsgn(c: var Context; n: var Cursor) =
         # `let tmp = y; =wasMoved(y); =destroy(x); x =bitcopy tmp`
         let tmp = tempOfTrArg(c, ri, leType)
         callWasMoved c, ri, leType
-        callDestroy(c, destructor, lhs)
+        callDestroy(c, destructor, lhs, leType)
         copyInto c.dest, n:
           var lhsAsCursor = cursorAt(lhs, 0)
           tr c, lhsAsCursor, DontCare
@@ -410,7 +420,7 @@ proc trAsgn(c: var Context; n: var Cursor) =
           skip n # skip right hand side
       else:
         if isNotFirstAsgn:
-          callDestroy(c, destructor, lhs)
+          callDestroy(c, destructor, lhs, leType)
         copyInto c.dest, n:
           copyTree c.dest, lhs
           n = ri
@@ -426,10 +436,10 @@ proc trAsgn(c: var Context; n: var Cursor) =
           tr c, lhsAsCursor, DontCare
           n = ri
           callDup c, n
-        callDestroy(c, destructor, tmp, le.info)
+        callDestroy(c, destructor, tmp, le.info, leType)
       else:
         if isNotFirstAsgn:
-          callDestroy(c, destructor, lhs)
+          callDestroy(c, destructor, lhs, leType)
         copyInto c.dest, n:
           var lhsAsCursor = cursorAt(lhs, 0)
           tr c, lhsAsCursor, DontCare
@@ -966,7 +976,7 @@ proc tr(c: var Context; n: var Cursor; e: Expects) =
        AddX, SubX, MulX, DivX, ModX, ShrX, ShlX, AshrX, BitandX, BitorX, BitxorX, BitnotX,
        PlusSetX, MinusSetX, MulSetX, XorSetX, EqSetX, LeSetX, LtSetX, InSetX, CardX,
        EqX, NeqX, LeX, LtX, InfX, NegInfX, NanX, CompilesX, DeclaredX,
-       DefinedX, HighX, LowX, TypeofX, UnpackX, FieldsX, FieldpairsX, EnumtostrX, IsmainmoduleX, QuotedX,
+       DefinedX, AstToStrX, HighX, LowX, TypeofX, UnpackX, FieldsX, FieldpairsX, EnumtostrX, IsmainmoduleX, QuotedX,
        AddrX, HaddrX, AlignofX, OffsetofX, ErrX, OvfX, InstanceofX, InternalTypeNameX, InternalFieldPairsX, IsX:
       trSons c, n, WantNonOwner
     of DerefX, HderefX:

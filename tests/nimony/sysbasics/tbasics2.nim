@@ -76,3 +76,42 @@ block:
   let s = hello3()
   assert s == 123
 
+block:
+  proc foo =
+    let a = 999
+
+    proc abend(): int =
+      return a
+
+    let res = abend
+
+  foo()
+
+
+type
+  E = enum
+    a, b, c, d
+  X = object
+    v: int
+  O = object
+    case kind: E
+    of a:
+      a: int
+    of b, c:
+      b: float
+    else:
+      d: X
+
+proc `=destroy`(x: var X) =
+  echo "x destroyed"
+
+var o = O(kind: d, d: X(v: 12345))
+assert o.d.v == 12345
+
+block:
+  proc foo(): int =
+    result = 12
+    ## 1234
+
+
+  assert foo() == 12
