@@ -2223,7 +2223,7 @@ proc semWhenImpl(c: var SemContext; it: var Item; mode: WhenMode) =
 
 proc semWhen(c: var SemContext; it: var Item) =
   case c.phase
-  of SemcheckTopLevelSyms:
+  of SemcheckTopLevelSyms, SemcheckImports:
     # XXX `const`s etc are not evaluated yet, so we cannot compile the `when` conditions
     # so symbols inside of `when` are not defined until `SemcheckSignatures`
     # effectively this means types defined in `when` cannot be used before they are declared
@@ -4328,6 +4328,12 @@ template pragmaGuard(c: var SemContext; body: untyped) =
   else:
     c.takeTree it.n
 
+template importGuard(c: var SemContext; body: untyped) =
+  if c.phase == SemcheckImports:
+    body
+  else:
+    c.takeTree it.n
+
 proc semAssumeAssert(c: var SemContext; it: var Item; kind: StmtKind) =
   let info = it.n.info
   inc it.n
@@ -4816,12 +4822,25 @@ proc semExpr(c: var SemContext; it: var Item; flags: set[SemFlag] = {}) =
       of CallKindsS:
         toplevelGuard c:
           semCall c, it, flags
-      of IncludeS: semInclude c, it
-      of ImportS: semImport c, it
-      of ImportExceptS: semImportExcept c, it
-      of FromimportS: semFromImport c, it
-      of ExportS: semExport c, it
-      of ExportExceptS: semExportExcept c, it
+      of IncludeS:
+        importGuard c:
+          semInclude c, it
+      of ImportS:
+        # skip it.n
+        importGuard c:
+          semImport c, it
+      of ImportExceptS:
+        importGuard c:
+          semImportExcept c, it
+      of FromimportS:
+        importGuard c:
+          semFromImport c, it
+      of ExportS:
+        importGuard c:
+          semExport c, it
+      of ExportExceptS:
+        importGuard c:
+          semExportExcept c, it
       of AsgnS:
         toplevelGuard c:
           semAsgn c, it
@@ -5314,13 +5333,11 @@ proc semcheckCore(c: var SemContext; n0: Cursor) =
     let systemFile = ImportedFilename(path: stdlibFile("std/system"), name: "system", isSystem: true)
     importSingleFile(c, systemFile, "", ImportFilter(kind: ImportAll), n0.info)
 
-  #echo "PHASE 1"
   var n1 = phaseX(c, n0, SemcheckTopLevelSyms)
-  #echo "PHASE 2: ", toString(n1)
-  var n2 = phaseX(c, beginRead(n1), SemcheckSignatures)
+  var n2 = phaseX(c, beginRead(n1), SemcheckImports)
+  var n3 = phaseX(c, beginRead(n2), SemcheckSignatures)
 
-  #echo "PHASE 3: ", toString(n2)
-  var n = beginRead(n2)
+  var n = beginRead(n3)
   c.phase = SemcheckBodies
   takeToken c, n
   while n.kind != ParRi:

@@ -62,6 +62,7 @@ type
 
   SemPhase* = enum
     SemcheckTopLevelSyms,
+    SemcheckImports,
     SemcheckSignatures,
     SemcheckBodies
 

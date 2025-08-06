@@ -910,7 +910,7 @@ proc semTypeSection(c: var SemContext; n: var Cursor) =
 
   if c.phase == SemcheckSignatures or
       (delayed.status in {OkNew, OkExistingFresh} and
-        c.phase != SemcheckTopLevelSyms):
+        c.phase notin {SemcheckTopLevelSyms, SemcheckImports}):
     # body:
     if n.kind == DotToken:
       takeToken c, n
@@ -976,7 +976,7 @@ proc semTypeSection(c: var SemContext; n: var Cursor) =
     swap c.dest, c.pending
 
   if isRefPtrObj:
-    if c.phase > SemcheckTopLevelSyms:
+    if c.phase > SemcheckImports:
       var topLevelDest = createTokenBuf(64)
       var topLevelRead = beginRead(innerObjDecl)
       var phase = SemcheckTopLevelSyms
@@ -1008,7 +1008,7 @@ proc addTupleAccess(buf: var TokenBuf; lvalue: SymId; i: int; info: PackedLineIn
 
 proc semUnpackDecl(c: var SemContext; it: var Item) =
   case c.phase
-  of SemcheckTopLevelSyms:
+  of SemcheckTopLevelSyms, SemcheckImports:
     c.takeTree it.n
     return
   of SemcheckSignatures:
