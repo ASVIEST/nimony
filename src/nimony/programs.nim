@@ -13,13 +13,13 @@ import ".." / models / [nifindex_tags]
 type
   Iface* = OrderedTable[StrId, seq[SymId]] # eg. "foo" -> @["foo.1.mod", "foo.3.mod"]
 
-  NifModule = ref object
+  NifModule* = ref object
     buf: TokenBuf
     stream: Stream
-    index: NifIndex
+    index*: NifIndex
 
   Program* = object
-    mods: Table[string, NifModule]
+    mods*: Table[string, NifModule]
     main*: SplittedModulePath
     mem: Table[SymId, TokenBuf]
 
@@ -198,6 +198,8 @@ proc tryLoadSym*(s: SymId): LoadResult =
         result = LoadResult(status: LacksNothing, decl: decl)
 
 proc tryLoadHook*(op: AttachedOp; typ: SymId; wantGeneric: bool): SymId =
+  # It should happen in hexer so 
+  # it not need changing for cyclic modules
   let nifName = pool.syms[typ]
   let modname = extractModule(nifName)
   result = SymId(0)
