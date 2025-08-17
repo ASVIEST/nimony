@@ -14,8 +14,8 @@ proc initSemContext(fileName: string): SemContext =
   let (_, file, _) = splitModulePath(fileName)
   var moduleFlags: set[ModuleFlag] = {}
   moduleFlags.incl IsMain # TODO: use real moduleFlags
-  var config = initNifConfig()
-  semos.setupPaths(config, true)
+  var config = initNifConfig("")
+  semos.setupPaths(config)
 
   result = SemContext(
     dest: createTokenBuf(),
