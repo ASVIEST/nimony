@@ -52,52 +52,15 @@ type
   CyclicContext = object
     syms: Table[string, seq[SymId]]
     resolveGraph: Table[SymId, SymId] # 
-
-    currentModuleName: string
-
     semContexts: Table[string, SemContext]
-
-
-    typeOrder: Table[SymId, int] # mapping from type symbol to declare number,
-                                 # it realy helpful to keep correct order and not allow use
-                                 # currently undefined types
     currentTypeOrder: int
 
-proc collectSyms*(c: var CyclicContext, n: var Cursor) =
-  # working after executed SemToplevelSyms phase to collect all known syms
-  echo "COLLECT: ", n
+proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
   case n.stmtKind
   of StmtsS:
     inc n
     while n.kind != ParRi:
-      collectSyms(c, n)
-    inc n # ParRi
-  else:
-    block nameSym:
-      let name: SymId
-      if n.stmtKind == TypeS:
-        name = asTypeDecl(n).name.symId
-        c.typeOrder[name] = c.currentTypeOrder
-        inc c.currentTypeOrder
-      elif n.symKind.isRoutine:
-        name = asRoutine(n).name.symId
-      elif n.symKind.isLocal:
-        # don't have global locals symId at SemToplevelSyms phase currently in nimony...
-        break nameSym # TODO: add Symbol generation to toplevel locals in SemToplevelSyms...
-        name = asLocal(n).name.symId
-      else:
-        break nameSym
-      
-      mgetOrPut(c.syms, c.currentModuleName).add name
-    
-    skip n
-
-proc genGraph(c: var CyclicContext, n: var Cursor) =
-  case n.stmtKind
-  of StmtsS:
-    inc n
-    while n.kind != ParRi:
-      genGraph(c, n)
+      genGraph(c, n, suffix)
     inc n # ParRi
   of TypeS:
     echo "Scanning type: ", n
@@ -113,26 +76,16 @@ proc genGraph(c: var CyclicContext, n: var Cursor) =
       # otherwise max(sizeof(branch1), sizeof(branch2)) can't be computed and
       # type cannot be built, so this checking correct
       var field = takeLocal(n, SkipFinalParRi)
-      var c = addr c.semContexts[c.currentModuleName]
+      var c = addr c.semContexts[suffix]
       let insertPos = c[].dest.len
       let count = buildSymChoice(c[], field.typ.litId, field.typ.info, InnerMost)
       # TODO: using field.typ.litId not correct because of ref obj, SomeGeneric[A, B], etc. It should be rewritten to adition proc that iterates on idents
-      echo c[].currentScope.kind
-      # echo beginRead(c[].dest)
+
       if count == 1:
         let sym = c[].dest[insertPos+1].symId
         echo pool.syms[sym]
       echo "cnt: ", count
       echo field.typ
-
-      # var it = c[].currentScope
-      # while it != nil:
-      #   for k, v in it.tab:
-      #     var s = pool.strings[k] & " : "
-      #     for i in v:
-      #       s.add pool.syms[i.name] & ", "
-      #     echo s
-      #   it = it.up
 
       skip n
       # inc n
@@ -215,7 +168,6 @@ proc cyclicSem(fileNames: seq[string]) =
     trees[fileName] = semcheckToplevel(sc, n0)
     
     var n = beginRead(trees[fileName])
-    c.currentModuleName = fileName
     c.semContexts[fileName] = sc
     
     let (_, suffix, _) = splitModulePath(fileName)
@@ -234,7 +186,7 @@ proc cyclicSem(fileNames: seq[string]) =
 
   for fileName in fileNames:
     var n = beginRead(trees[fileName])
-    c.genGraph n
+    c.genGraph n, fileName
 
 
 
