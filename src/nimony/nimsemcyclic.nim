@@ -50,10 +50,41 @@ proc semcheckToplevel(c: var SemContext; n0: Cursor): TokenBuf =
 
 type
   CyclicContext = object
-    syms: Table[string, seq[SymId]]
-    resolveGraph: Table[SymId, SymId] # 
+    resolveGraph: Table[SymId, seq[SymId]]
     semContexts: Table[string, SemContext]
-    currentTypeOrder: int
+
+proc resolveSym(c: var CyclicContext, sym: SymId, fromSym: SymId) =
+  let suffix = extractModule(pool.syms[sym])
+  if suffix in c.semContexts: # check that symbol from this SCC
+    c.resolveGraph.mgetOrPut(fromSym, @[]).add sym
+
+proc resolveIdent(c: var CyclicContext, n: sink Cursor, s: ptr SemContext, fromSym: SymId) =
+  let insertPos = s[].dest.len
+  let count = buildSymChoice(s[], n.litId, n.info, InnerMost)
+  if count == 1:
+    let sym = s[].dest[insertPos+1].symId
+    resolveSym c, sym, fromSym
+  s[].dest.shrink insertPos
+
+proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromSym: SymId) =
+  if n.kind == ParLe:
+    var nested = 0
+    while true:
+      inc n
+      if n.kind == ParRi:
+        if nested == 0: break
+        dec nested
+      elif n.kind == ParLe: inc nested
+      elif n.kind in {Symbol, SymbolDef}:
+        resolveSym c, n.symId, fromSym
+      elif n.kind == Ident:
+        resolveIdent c, n, s, fromSym
+  elif n.kind in {Symbol, SymbolDef}:
+    resolveSym c, n.symId, fromSym
+  elif n.kind == Ident:
+    resolveIdent c, n, s, fromSym
+  
+  inc n
 
 proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
   case n.stmtKind
@@ -76,20 +107,10 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
       # otherwise max(sizeof(branch1), sizeof(branch2)) can't be computed and
       # type cannot be built, so this checking correct
       var field = takeLocal(n, SkipFinalParRi)
-      var c = addr c.semContexts[suffix]
-      let insertPos = c[].dest.len
-      let count = buildSymChoice(c[], field.typ.litId, field.typ.info, InnerMost)
-      # TODO: using field.typ.litId not correct because of ref obj, SomeGeneric[A, B], etc. It should be rewritten to adition proc that iterates on idents
+      var s = addr c.semContexts[suffix]
+      graphExpr c, field.typ, s, decl.name.symId
 
-      if count == 1:
-        let sym = c[].dest[insertPos+1].symId
-        echo pool.syms[sym]
-      echo "cnt: ", count
-      echo field.typ
-
-      skip n
-      # inc n
-
+    inc n
     inc n
   else:
     skip n
@@ -165,29 +186,37 @@ proc cyclicSem(fileNames: seq[string]) =
   for fileName in fileNames:
     var sc = initSemContext(fileName)
     var n0 = setupProgram(fileName, fileName & ".tmp.nif") # TODO: replace
-    trees[fileName] = semcheckToplevel(sc, n0)
-    
-    var n = beginRead(trees[fileName])
-    c.semContexts[fileName] = sc
     
     let (_, suffix, _) = splitModulePath(fileName)
+    trees[suffix] = semcheckToplevel(sc, n0)
+    c.semContexts[suffix] = sc
+
     if suffix notin prog.mods:
       prog.mods[suffix] = NifModule()
     
+    var n = beginRead(trees[suffix])
     prepareImports(prog.mods[suffix], n)
   
   for fileName in fileNames:
-    var n = beginRead(trees[fileName])
-    var tree = phaseX(c.semContexts[fileName], n, SemcheckImports)
-    trees[fileName] = tree
+    let (_, suffix, _) = splitModulePath(fileName)
+    var n = beginRead(trees[suffix])
+    var tree = phaseX(c.semContexts[suffix], n, SemcheckImports)
+    trees[suffix] = tree
   
   # Now we have importTab. It means that we can use anything with imported symbols.
   # For example, buildSymChoice should work with imported Symbols
 
   for fileName in fileNames:
-    var n = beginRead(trees[fileName])
-    c.genGraph n, fileName
-
+    let (_, suffix, _) = splitModulePath(fileName)
+    var n = beginRead(trees[suffix])
+    c.genGraph n, suffix
+  
+  for i, v in c.resolveGraph:
+    echo pool.syms[i]
+    echo ": "
+    for j in v:
+      echo pool.syms[j]
+    echo ""
 
 
 cyclicSem(@["nimcache/atxy29s.1.nif", "nimcache/bvhuex5.1.nif"])
