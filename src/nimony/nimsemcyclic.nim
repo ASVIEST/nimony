@@ -250,11 +250,31 @@ proc cyclicSem(fileNames: seq[string]) =
       echo pool.syms[j]
     echo ""
   
+  # Realy it not so important because
+  # all declared syms already in prog.mem
+  # So realy semcheck can be runned in any order
+  # And after semcheck we have updated decl in prog.mem
+  # But if do it in wrong order, generating new type
+  # will use prog.mem on SemcheckImports phase
+  # and it not a big problem because of no forward declaration for types etc.
+  # But it need for when feature. Also it guarantee that
+  # type fully semchecked and nothing bad will happen.
   var topo = c.topologicalSort()
   topo.reverse()
 
   for i in topo:
     echo pool.syms[i], ", "
+
+  for sym in topo:
+    var load = tryLoadSym(sym)
+    let suffix = extractModule(pool.syms[sym])
+    c.semContexts[suffix].phase = SemcheckSignatures
+    echo c.semContexts[suffix].dest.len
+    semStmt c.semContexts[suffix], load.decl, false
+    echo c.semContexts[suffix].dest.len
+
+    echo tryLoadSym(sym).decl
+
 
 
 cyclicSem(@["nimcache/atxy29s.1.nif", "nimcache/bvhuex5.1.nif"])
