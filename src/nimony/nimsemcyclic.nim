@@ -4,7 +4,7 @@
 ## but fortunately SCC is usually small (maximum of 3-4 modules)
 
 
-import std / [parseopt, strutils, assertions, syncio, tables, osproc]
+import std / [parseopt, strutils, assertions, syncio, tables, osproc, deques, algorithm]
 import ".." / lib / [nifstreams, nifcursors, bitabs, lineinfos, nifreader, nifbuilder, tooldirs, nifindexes]
 import ".." / nimony / [nimony_model, decls, symtabs, programs, semos, semdata, nifconfig, indexgen]
 include sem
@@ -179,6 +179,38 @@ proc prepareImports(c: var NifModule, n: var Cursor) =
 
     skip n
 
+proc topologicalSort(c: var CyclicContext): seq[SymId] =
+  # uses Kahn's algorithm for topological sorting
+
+  var indegrees = initTable[SymId, int]() # number of incoming nodes
+  var queue = initDeque[SymId]()
+  
+  for (toSym, fromSyms) in c.resolveGraph.pairs:
+    indegrees[toSym] = 0 # indegrees should be defined for all syms to sort
+    for fromSym in fromSyms:
+      indegrees[fromSym] = 0
+  
+  for (toSym, fromSyms) in c.resolveGraph.pairs:
+    for fromSym in fromSyms:
+      inc indegrees[fromSym]
+  
+  for (sym, indegree) in indegrees.pairs:
+    if indegree == 0:
+      queue.addLast sym
+
+  result = @[]
+  while queue.len > 0:
+    let u = queue.popFirst()
+    result.add u
+
+    for neighboor in c.resolveGraph.getOrDefault(u):
+      dec indegrees[neighboor]
+      if indegrees[neighboor] == 0:
+        queue.addLast neighboor
+  
+  if len(result) != len(indegrees):
+    error "cyclic type dependence detected"
+
 proc cyclicSem(fileNames: seq[string]) =
   var c = CyclicContext()
   
@@ -217,6 +249,12 @@ proc cyclicSem(fileNames: seq[string]) =
     for j in v:
       echo pool.syms[j]
     echo ""
+  
+  var topo = c.topologicalSort()
+  topo.reverse()
+
+  for i in topo:
+    echo pool.syms[i], ", "
 
 
 cyclicSem(@["nimcache/atxy29s.1.nif", "nimcache/bvhuex5.1.nif"])
