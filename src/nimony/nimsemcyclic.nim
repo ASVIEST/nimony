@@ -211,6 +211,23 @@ proc topologicalSort(c: var CyclicContext): seq[SymId] =
   if len(result) != len(indegrees):
     error "cyclic type dependence detected"
 
+proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table[string, TokenBuf]) =
+  for s in c.semContexts.mvalues:
+    s.dest.addParLe TagId(StmtsS), NoLineInfo
+
+  for sym in topo:
+    var load = tryLoadSym(sym)
+    let suffix = extractModule(pool.syms[sym])
+    var s = addr c.semContexts[suffix]
+    s[].phase = SemcheckSignatures
+    semStmt s[], load.decl, false
+    s[].pragmaStack.setLen(0) # {.pop.} fixed?
+  
+  for suffix in c.semContexts.keys:
+    var s = addr c.semContexts[suffix]
+    s[].dest.addParRi
+    trees[suffix] = move s[].dest
+
 proc cyclicSem(fileNames: seq[string]) =
   var c = CyclicContext()
   
@@ -264,16 +281,19 @@ proc cyclicSem(fileNames: seq[string]) =
 
   for i in topo:
     echo pool.syms[i], ", "
-
-  for sym in topo:
-    var load = tryLoadSym(sym)
-    let suffix = extractModule(pool.syms[sym])
-    c.semContexts[suffix].phase = SemcheckSignatures
-    echo c.semContexts[suffix].dest.len
-    semStmt c.semContexts[suffix], load.decl, false
-    echo c.semContexts[suffix].dest.len
-
-    echo tryLoadSym(sym).decl
+  
+  semcheckSignatures c, topo, trees
+  
+  for fileName in fileNames:
+    let (_, suffix, _) = splitModulePath(fileName)
+    var n = beginRead(trees[suffix])
+    
+    var s = addr c.semContexts[suffix]
+    s[].phase = SemcheckBodies
+    takeToken s[], n
+    while n.kind != ParRi:
+      semStmt s[], n, false
+  
 
 
 
