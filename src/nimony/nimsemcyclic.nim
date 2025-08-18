@@ -212,6 +212,12 @@ proc topologicalSort(c: var CyclicContext): seq[SymId] =
     error "cyclic type dependence detected"
 
 proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table[string, TokenBuf]) =
+  # SemcheckSignatures is unusual because it working in topologic order on some decls.
+  # so it need to generate true dest:
+  # (stmts
+  #   Semchecked decls
+  #   Input tree without semchecked decls
+  # )
   for s in c.semContexts.mvalues:
     s.dest.addParLe TagId(StmtsS), NoLineInfo
 
@@ -222,6 +228,17 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     s[].phase = SemcheckSignatures
     semStmt s[], load.decl, false
     s[].pragmaStack.setLen(0) # {.pop.} fixed?
+  
+  for suffix in c.semContexts.keys:
+    # ordinal SemcheckSignatures for not semchecked things
+    var s = addr c.semContexts[suffix]
+    var n = beginRead(trees[suffix])
+    inc n
+    while n.kind != ParRi:
+      if n.stmtKind != TypeS:
+        semStmt s[], n, false
+      else:
+        skip n
   
   for suffix in c.semContexts.keys:
     var s = addr c.semContexts[suffix]
@@ -294,7 +311,17 @@ proc cyclicSem(fileNames: seq[string]) =
     while n.kind != ParRi:
       semStmt s[], n, false
   
+  # For type plugins we need to run SemcheckBody again? WTF
+  
+  for fileName in fileNames:
+    let (_, suffix, _) = splitModulePath(fileName)
+    var s = addr c.semContexts[suffix]
+    s[].dest.addParRi    
 
+    if reportErrors(s[]) == 0:
+      writeOutput s[], fileName.substr(0, fileName.len - ".nif".len - 1).changeFileExt(".2.nif")
+    else:
+      quit 1
 
 
 cyclicSem(@["nimcache/atxy29s.1.nif", "nimcache/bvhuex5.1.nif"])
