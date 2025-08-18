@@ -344,8 +344,19 @@ proc cyclicSem(fileNames: seq[string]) =
         requestMethods(s[], val, res.decl)
         s[].dest.copyTree res.decl
     instantiateGenericHooks s[]
-    # takeParRi s[], n
+    takeParRi s[], n
     s[].dest.addParRi
+
+    if reportErrors(s[]) == 0:
+      var afterSem = move s[].dest
+      when true: #defined(enableContracts):
+        var moreErrors = analyzeContracts(afterSem)
+        if reporters.reportErrors(moreErrors) > 0:
+          quit 1
+      var finalBuf = beginRead afterSem
+      s[].dest = injectDerefs(finalBuf)
+    else:
+      quit 1
 
     if reportErrors(s[]) == 0:
       writeOutput s[], fileName.substr(0, fileName.len - ".nif".len - 1).changeFileExt(".2.nif")
