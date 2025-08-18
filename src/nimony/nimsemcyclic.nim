@@ -34,7 +34,7 @@ proc initSemContext(fileName: string): SemContext =
 
 
 proc semcheckToplevel(c: var SemContext; n0: Cursor): TokenBuf =
-  # c.pending.add parLeToken(StmtsS, NoLineInfo)
+  c.pending.add parLeToken(StmtsS, NoLineInfo)
   c.currentScope = Scope(tab: initTable[StrId, seq[Sym]](), up: nil, kind: ToplevelScope)
 
   let path = getFile(n0.info) # gets current module path, maybe there is a better way
@@ -325,14 +325,16 @@ proc cyclicSem(fileNames: seq[string]) =
     takeToken s[], n
     while n.kind != ParRi:
       semStmt s[], n, false
-  
-  # For type plugins we need to run SemcheckBody again? WTF
-  
-  for fileName in fileNames:
-    let (_, suffix, _) = splitModulePath(fileName)
-    var s = addr c.semContexts[suffix]
-    # s[].dest.addParRi
-
+    
+    s[].pending.addParRi()
+    var cur = beginRead(s[].pending)
+    inc cur
+    s[].phase = SemcheckBodies
+    while cur.kind != ParRi:
+      semStmt s[], cur, false
+    skipParRi(cur)
+    endRead(s[].pending)
+    
     instantiateGenerics s[]
     for val in s[].typeInstDecls:
       let sym = fetchSym(s[], val)
