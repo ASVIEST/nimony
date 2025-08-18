@@ -222,7 +222,7 @@ proc needOrdinalSemcheck(c: var CyclicContext, n: Cursor, topo: sink seq[SymId])
   of TypeS:
     let decl = asTypeDecl(n)
 
-    decl.name.kind == SymbolDef
+    decl.name.kind == SymbolDef and decl.name.symId notin topo
   else:
     true
 
