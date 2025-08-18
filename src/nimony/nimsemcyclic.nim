@@ -56,7 +56,10 @@ type
 proc resolveSym(c: var CyclicContext, sym: SymId, fromSym: SymId) =
   let suffix = extractModule(pool.syms[sym])
   if suffix in c.semContexts: # check that symbol from this SCC
-    c.resolveGraph.mgetOrPut(fromSym, @[]).add sym
+    var load = tryLoadSym(sym)
+    assert load.status == LacksNothing
+    if symKind(load.decl) != TypevarY: # In resolve graph Type shouldn't depend to TypeVar
+      c.resolveGraph.mgetOrPut(fromSym, @[]).add sym
 
 proc resolveIdent(c: var CyclicContext, n: sink Cursor, s: ptr SemContext, fromSym: SymId) =
   let insertPos = s[].dest.len
