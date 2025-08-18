@@ -159,7 +159,6 @@ proc prepareImports(c: var NifModule, n: var Cursor) =
         sym = decl.name.symId
         isPublic = decl.exported.kind != DotToken
       elif n.symKind.isRoutine:
-        break nameSym # TODO: add Symbol generation for toplevel procs in SemToplevelSyms...
         let decl = asRoutine(n)
         sym = decl.name.symId
         isPublic = decl.exported.kind != DotToken

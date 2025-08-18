@@ -474,7 +474,7 @@ proc instantiateType(c: var SemContext; typ: Cursor; bindings: Table[SymId, Curs
   swap c.dest, instDest
 
 type
-  PassKind = enum checkSignatures, checkBody, checkGenericInst, checkConceptProc
+  PassKind = enum checkName, checkSignatures, checkBody, checkGenericInst, checkConceptProc
 
 proc semProc(c: var SemContext; it: var Item; kind: SymKind; pass: PassKind)
 proc instantiateGenericProc(c: var SemContext; req: InstRequest) =
@@ -4302,7 +4302,10 @@ proc semSizeof(c: var SemContext; it: var Item) =
   commonType c, it, beforeExpr, expected
 
 proc whichPass(c: SemContext): PassKind =
-  result = if c.phase == SemcheckSignatures: checkSignatures else: checkBody
+  result =
+    if c.phase == SemcheckTopLevelSyms: checkName
+    elif c.phase == SemcheckSignatures: checkSignatures
+    else: checkBody
 
 template toplevelGuard(c: var SemContext; body: untyped) =
   if c.phase == SemcheckBodies:
@@ -4311,7 +4314,7 @@ template toplevelGuard(c: var SemContext; body: untyped) =
     c.takeTree it.n
 
 template procGuard(c: var SemContext; body: untyped) =
-  if c.phase in {SemcheckSignatures, SemcheckBodies}:
+  if c.phase in {SemcheckToplevelSyms, SemcheckSignatures, SemcheckBodies}:
     body
   else:
     c.takeTree it.n
