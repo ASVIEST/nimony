@@ -234,13 +234,13 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
   #   Input tree without semchecked decls
   # )
   for s in c.semContexts.mvalues:
+    s.phase = SemcheckSignatures
     s.dest.addParLe TagId(StmtsS), NoLineInfo
 
   for sym in topo:
     var load = tryLoadSym(sym)
     let suffix = extractModule(pool.syms[sym])
     var s = addr c.semContexts[suffix]
-    s[].phase = SemcheckSignatures
     semStmt s[], load.decl, false
     s[].pragmaStack.setLen(0) # {.pop.} fixed?
   
