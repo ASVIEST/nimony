@@ -331,7 +331,19 @@ proc cyclicSem(fileNames: seq[string]) =
   for fileName in fileNames:
     let (_, suffix, _) = splitModulePath(fileName)
     var s = addr c.semContexts[suffix]
-    s[].dest.addParRi    
+    # s[].dest.addParRi
+
+    instantiateGenerics s[]
+    for val in s[].typeInstDecls:
+      let sym = fetchSym(s[], val)
+      let res = declToCursor(s[], sym)
+      if res.status == LacksNothing:
+        requestHookInstance(s[], res.decl)
+        requestMethods(s[], val, res.decl)
+        s[].dest.copyTree res.decl
+    instantiateGenericHooks s[]
+    # takeParRi s[], n
+    s[].dest.addParRi
 
     if reportErrors(s[]) == 0:
       writeOutput s[], fileName.substr(0, fileName.len - ".nif".len - 1).changeFileExt(".2.nif")
