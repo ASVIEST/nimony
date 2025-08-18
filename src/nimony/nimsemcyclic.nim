@@ -215,6 +215,17 @@ proc topologicalSort(c: var CyclicContext): seq[SymId] =
   if len(result) != len(indegrees):
     error "cyclic type dependence detected"
 
+proc needOrdinalSemcheck(c: var CyclicContext, n: Cursor, topo: sink seq[SymId]): bool =
+  # try check that n not already semchecked after semchecking
+  # topologicaly sorted decls
+  case n.stmtKind
+  of TypeS:
+    let decl = asTypeDecl(n)
+
+    decl.name.kind == SymbolDef
+  else:
+    true
+
 proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table[string, TokenBuf]) =
   # SemcheckSignatures is unusual because it working in topologic order on some decls.
   # so it need to generate true dest:
@@ -239,7 +250,7 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     var n = beginRead(trees[suffix])
     inc n
     while n.kind != ParRi:
-      if n.stmtKind != TypeS:
+      if needOrdinalSemcheck(c, n, topo):
         semStmt s[], n, false
       else:
         skip n
