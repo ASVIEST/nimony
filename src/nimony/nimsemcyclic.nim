@@ -206,7 +206,7 @@ proc prepareImports(c: var NifModule, n: var Cursor) =
       if n.stmtKind == TypeS:
         let decl = asTypeDecl(n)
         if decl.name.kind != SymbolDef:
-          break nameSym # current nimony can't create symbols for toplevel types in when at SemcheckToplevelSyms.
+          break nameSym
         sym = decl.name.symId
         isPublic = decl.exported.kind != DotToken
       elif n.symKind.isRoutine:
@@ -269,7 +269,12 @@ proc needOrdinalSemcheck(c: var CyclicContext, n: Cursor, topo: sink seq[SymId])
   case n.stmtKind
   of TypeS:
     let decl = asTypeDecl(n)
-
+    decl.name.kind == SymbolDef and decl.name.symId notin topo
+  elif n.symKind.isLocal:
+    let decl = asLocal(n)
+    decl.name.kind == SymbolDef and decl.name.symId notin topo
+  elif n.symKind.isRoutine:
+    let decl = asRoutine(n)
     decl.name.kind == SymbolDef and decl.name.symId notin topo
   else:
     true
