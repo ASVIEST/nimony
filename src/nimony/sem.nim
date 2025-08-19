@@ -4320,7 +4320,7 @@ template procGuard(c: var SemContext; body: untyped) =
     c.takeTree it.n
 
 template constGuard(c: var SemContext; body: untyped) =
-  if c.phase in {SemcheckSignatures, SemcheckBodies}:
+  if c.phase in {SemcheckTopLevelSyms, SemcheckSignatures, SemcheckBodies}:
     body
   else:
     c.takeTree it.n

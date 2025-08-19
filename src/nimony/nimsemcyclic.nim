@@ -115,6 +115,34 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
 
     inc n
     inc n
+  of WhenS:
+    # TODO: implement
+    # when can make dependency for consts
+    # when someConst:
+    #   type A* = object
+    # else:
+    #   type B* = object
+    # 
+    # it means that A, B depend on someConst value
+    # (all decls used in elif's should used as fromSym for future graphExpr)
+    inc n
+    while n.kind != ParRi:
+      case n.substructureKind
+      of ElifU:
+        inc n # (elif
+        skip n # cond
+        inc n # cond; it is max interface so not need testing cond
+        genGraph(c, n, suffix)
+        inc n # ParRi
+      of ElseU:
+        inc n # (else
+        genGraph(c, n, suffix)
+        inc n # ParRi
+      else:
+        echo n
+        quit "Invalid ast"
+    inc n # ParRi
+    
   else:
     skip n
 
@@ -139,7 +167,7 @@ proc prepareImports(c: var NifModule, n: var Cursor) =
       case n.substructureKind
       of ElifU:
         inc n # (elif
-        inc n # cond; it is max interface so not need testing cond
+        skip n # cond; it is max interface so not need testing cond
         prepareImports(c, n)
         inc n # ParRi
       of ElseU:
@@ -163,8 +191,6 @@ proc prepareImports(c: var NifModule, n: var Cursor) =
         sym = decl.name.symId
         isPublic = decl.exported.kind != DotToken
       elif n.symKind.isLocal:
-        # don't have global locals symId at SemcheckToplevelSyms phase currently in nimony...
-        break nameSym # TODO: add Symbol generation for toplevel locals in SemToplevelSyms...
         let decl = asLocal(n)
         sym = decl.name.symId
         isPublic = decl.exported.kind != DotToken

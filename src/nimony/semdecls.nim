@@ -72,60 +72,67 @@ proc semLocal(c: var SemContext; n: var Cursor; kind: SymKind) =
   let beforeExportMarker = c.dest.len
   wantExportMarker c, n # 1
   var crucial = CrucialPragma(sym: delayed.s.name)
-  semPragmas c, n, crucial, kind # 2
-  if crucial.magic.len > 0:
-    exportMarkerBecomesNifTag c, beforeExportMarker, crucial
+  if c.phase == SemcheckTopLevelSyms:
+    takeTree c, n # 2
+  else:
+    semPragmas c, n, crucial, kind # 2
+    if crucial.magic.len > 0:
+      exportMarkerBecomesNifTag c, beforeExportMarker, crucial
+  
   if delayed.status == OkExistingFresh and InjectP in crucial.flags:
     # symbol is injected, add it to scope
     delayed.status = OkNew
 
   var beforeType = -1
-
-  case kind
-  of TypevarY:
-    discard semLocalType(c, n, InGenericConstraint)
-    wantDot c, n
-  of ParamY, LetY, VarY, ConstY, CursorY, ResultY, FldY, GletY, TletY, GvarY, TvarY:
-    beforeType = c.dest.len
-    if n.kind == DotToken:
-      # no explicit type given:
-      inc n # 3
-      let orig = n
-      var it = Item(n: n, typ: c.types.autoType)
-      if kind == ConstY:
-        withNewScope c:
-          semConstExpr c, it # 4
-      elif kind == ParamY and it.n.kind == DotToken:
-        if delayed.lit in c.usingStmtMap:
-          it.typ = c.usingStmtMap[delayed.lit]
-        elif c.routine.kind in {TemplateY, MacroY}:
-          it.typ = c.types.untypedType
-        else:
-          buildErr c, it.n.info, "type or init value expected"
-        c.dest.takeToken it.n
-      else:
-        semLocalValue c, it, crucial # 4
-      n = it.n
-      let typ = skipModifier(it.typ)
-      if classifyType(c, typ) == VoidT:
-         c.buildErr n.info, "expression '" & asNimCode(orig) & "' has no type (or is ambiguous)"
-      insertType c, typ, beforeType
-    else:
-      let typ = semLocalType(c, n) # 3
+  if c.phase == SemcheckTopLevelSyms:
+    takeTree c, n # 3
+    takeTree c, n # 4
+  else:
+    case kind
+    of TypevarY:
+      discard semLocalType(c, n, InGenericConstraint)
+      wantDot c, n
+    of ParamY, LetY, VarY, ConstY, CursorY, ResultY, FldY, GletY, TletY, GvarY, TvarY:
+      beforeType = c.dest.len
       if n.kind == DotToken:
-        # empty value
-        takeToken c, n
-      else:
-        var it = Item(n: n, typ: typ)
+        # no explicit type given:
+        inc n # 3
+        let orig = n
+        var it = Item(n: n, typ: c.types.autoType)
         if kind == ConstY:
           withNewScope c:
             semConstExpr c, it # 4
+        elif kind == ParamY and it.n.kind == DotToken:
+          if delayed.lit in c.usingStmtMap:
+            it.typ = c.usingStmtMap[delayed.lit]
+          elif c.routine.kind in {TemplateY, MacroY}:
+            it.typ = c.types.untypedType
+          else:
+            buildErr c, it.n.info, "type or init value expected"
+          c.dest.takeToken it.n
         else:
           semLocalValue c, it, crucial # 4
         n = it.n
-        patchType c, it.typ, beforeType
-  else:
-    bug "semLocal"
+        let typ = skipModifier(it.typ)
+        if classifyType(c, typ) == VoidT:
+          c.buildErr n.info, "expression '" & asNimCode(orig) & "' has no type (or is ambiguous)"
+        insertType c, typ, beforeType
+      else:
+        let typ = semLocalType(c, n) # 3
+        if n.kind == DotToken:
+          # empty value
+          takeToken c, n
+        else:
+          var it = Item(n: n, typ: typ)
+          if kind == ConstY:
+            withNewScope c:
+              semConstExpr c, it # 4
+          else:
+            semLocalValue c, it, crucial # 4
+          n = it.n
+          patchType c, it.typ, beforeType
+    else:
+      bug "semLocal"
 
   if beforeType != -1:
     let hasError = c.addSymForwardError delayed
