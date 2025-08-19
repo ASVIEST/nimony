@@ -2196,7 +2196,7 @@ proc semWhenImpl(c: var SemContext; it: var Item; mode: WhenMode) =
         takeTree c, it.n
       takeParRi c, it.n
   else:
-    buildErr c, it.n.info, "illformed AST: `elif` inside `if` expected"
+    buildErr c, it.n.info, "illformed AST: `elif` inside `when` expected"
   if it.n.substructureKind == ElseU:
     takeToken c, it.n
     if not leaveUnresolved:
@@ -2221,20 +2221,49 @@ proc semWhenImpl(c: var SemContext; it: var Item; mode: WhenMode) =
   else:
     it.typ = c.types.untypedType
 
+proc semToplevelWhen(c: var SemContext; it: var Item; mode: WhenMode) =
+  # When expand toplevel to one more scope, so SemcheckTopLevelSyms should
+  # continue working on inner tree. Instead of when on other phases it
+  # always works for all branches
+  takeToken c, it.n # (when
+  var leaveUnresolved = false
+  if it.n.substructureKind == ElifU:
+    while it.n.substructureKind == ElifU:
+      takeToken c, it.n # (elif
+      takeTree c, it.n # cond
+      case mode
+      of NormalWhen:
+        semExprMissingPhases c, it, SemcheckTopLevelSyms
+      of ObjectWhen:
+        semObjectComponent c, it.n # currently impossible?
+      takeParRi c, it.n # )
+  else:
+    buildErr c, it.n.info, "illformed AST: `elif` inside `when` expected"
+  if it.n.substructureKind == ElseU:
+    takeToken c, it.n # (else
+    case mode
+    of NormalWhen:
+      semExprMissingPhases c, it, SemcheckTopLevelSyms
+    of ObjectWhen:
+      semObjectComponent c, it.n # currently impossible
+    takeParRi c, it.n # )
+  takeParRi c, it.n # )
+
 proc semWhen(c: var SemContext; it: var Item) =
+  inc c.inWhen
   case c.phase
-  of SemcheckTopLevelSyms, SemcheckImports:
+  of SemcheckTopLevelSyms:
+    semToplevelWhen(c, it, NormalWhen)
+  of SemcheckImports:
+    c.takeTree it.n
+    return
+  of SemcheckSignatures, SemcheckBodies:
+    # Now wrong, but need fix new bug: no error for using undefined symbol
     # XXX `const`s etc are not evaluated yet, so we cannot compile the `when` conditions
     # so symbols inside of `when` are not defined until `SemcheckSignatures`
     # effectively this means types defined in `when` cannot be used before they are declared
     # but this was already not possible in original Nim
-    c.takeTree it.n
-    return
-  of SemcheckSignatures, SemcheckBodies:
-    discard
-
-  inc c.inWhen
-  semWhenImpl(c, it, NormalWhen)
+    semWhenImpl(c, it, NormalWhen)
   dec c.inWhen
 
 proc semCaseOfValueImpl(c: var SemContext; it: var Item; selectorType: TypeCursor;
