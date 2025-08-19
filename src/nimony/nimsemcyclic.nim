@@ -93,7 +93,6 @@ proc scanExprSyms(c: var CyclicContext, n: var Cursor, s: ptr SemContext, syms: 
 proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromSym: SymId) =
   var syms: seq[SymId] = @[]
   scanExprSyms c, n, s, syms
-  syms.add c.depsStack
   for sym in syms:
     c.resolveGraph.mgetOrPut(fromSym, @[]).add sym
 
@@ -111,7 +110,10 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     inc n # skip `(object` token
     skip n # skip basetype
 
-    if decl.name.kind == Symbol:
+    if decl.name.kind == SymbolDef:
+      for sym in c.depsStack:
+        c.resolveGraph.mgetOrPut(decl.name.symId, @[]).add sym
+      
       var iter = initObjFieldIter()
       
       while nextField(iter, n, keepCase = false):
@@ -125,7 +127,6 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     inc n
     inc n
   of WhenS:
-    # TODO: implement
     # when can make dependency for consts
     # when someConst:
     #   type A* = object
