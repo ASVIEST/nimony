@@ -135,19 +135,26 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     # 
     # it means that A, B depend on someConst value
     # (all decls used in elif's should used as fromSym for future graphExpr)
+    # Conditions stacked!
+    # Ie: 
+    # when a: body1
+    # elif b: body2
+    # means
+    # body1 (if a): need know a
+    # body2 (if not a and b): need know a and b
+    var depsPos = c.depsStack.len
+    var s = addr c.semContexts[suffix]
     inc n
     while n.kind != ParRi:
       case n.substructureKind
       of ElifU:
         inc n # (elif
-        let insertPos = c.depsStack.len
         var syms: seq[SymId] = @[]
-        var s = addr c.semContexts[suffix]
         scanExprSyms c, n, s, syms # cond
         c.depsStack.add syms
         genGraph(c, n, suffix)
-        c.depsStack.shrink(insertPos)
         inc n # ParRi
+        echo n.kind
       of ElseU:
         inc n # (else
         genGraph(c, n, suffix)
@@ -156,7 +163,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         echo n
         quit "Invalid ast"
     inc n # ParRi
-    
+    c.depsStack.shrink(depsPos)
   else:
     skip n
 
