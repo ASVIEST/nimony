@@ -52,24 +52,25 @@ type
   CyclicContext = object
     resolveGraph: Table[SymId, seq[SymId]]
     semContexts: Table[string, SemContext]
+    depsStack: seq[SymId] # used to spread decls to inner contexts
 
-proc resolveSym(c: var CyclicContext, sym: SymId, fromSym: SymId) =
+proc resolveSym(c: var CyclicContext, sym: SymId, syms: var seq[SymId]) =
   let suffix = extractModule(pool.syms[sym])
   if suffix in c.semContexts: # check that symbol from this SCC
     var load = tryLoadSym(sym)
     assert load.status == LacksNothing
     if symKind(load.decl) != TypevarY: # In resolve graph Type shouldn't depend to TypeVar
-      c.resolveGraph.mgetOrPut(fromSym, @[]).add sym
+      syms.add sym
 
-proc resolveIdent(c: var CyclicContext, n: sink Cursor, s: ptr SemContext, fromSym: SymId) =
+proc resolveIdent(c: var CyclicContext, n: sink Cursor, s: ptr SemContext, syms: var seq[SymId]) =
   let insertPos = s[].dest.len
   let count = buildSymChoice(s[], n.litId, n.info, InnerMost)
   if count == 1:
     let sym = s[].dest[insertPos+1].symId
-    resolveSym c, sym, fromSym
+    resolveSym c, sym, syms
   s[].dest.shrink insertPos
 
-proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromSym: SymId) =
+proc scanExprSyms(c: var CyclicContext, n: var Cursor, s: ptr SemContext, syms: var seq[SymId]) =
   if n.kind == ParLe:
     var nested = 0
     while true:
@@ -79,15 +80,22 @@ proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromSym: 
         dec nested
       elif n.kind == ParLe: inc nested
       elif n.kind in {Symbol, SymbolDef}:
-        resolveSym c, n.symId, fromSym
+        resolveSym c, n.symId, syms
       elif n.kind == Ident:
-        resolveIdent c, n, s, fromSym
+        resolveIdent c, n, s, syms
   elif n.kind in {Symbol, SymbolDef}:
-    resolveSym c, n.symId, fromSym
+    resolveSym c, n.symId, syms
   elif n.kind == Ident:
-    resolveIdent c, n, s, fromSym
+    resolveIdent c, n, s, syms
   
   inc n
+
+proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromSym: SymId) =
+  var syms: seq[SymId] = @[]
+  scanExprSyms c, n, s, syms
+  syms.add c.depsStack
+  for sym in syms:
+    c.resolveGraph.mgetOrPut(fromSym, @[]).add sym
 
 proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
   case n.stmtKind
@@ -103,15 +111,16 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     inc n # skip `(object` token
     skip n # skip basetype
 
-    var iter = initObjFieldIter()
-    
-    while nextField(iter, n, keepCase = false):
-      # For case object we need to check all branches since
-      # otherwise max(sizeof(branch1), sizeof(branch2)) can't be computed and
-      # type cannot be built, so this checking correct
-      var field = takeLocal(n, SkipFinalParRi)
-      var s = addr c.semContexts[suffix]
-      graphExpr c, field.typ, s, decl.name.symId
+    if decl.name.kind == Symbol:
+      var iter = initObjFieldIter()
+      
+      while nextField(iter, n, keepCase = false):
+        # For case object we need to check all branches since
+        # otherwise max(sizeof(branch1), sizeof(branch2)) can't be computed and
+        # type cannot be built, so this checking correct
+        var field = takeLocal(n, SkipFinalParRi)
+        var s = addr c.semContexts[suffix]
+        graphExpr c, field.typ, s, decl.name.symId
 
     inc n
     inc n
@@ -130,9 +139,13 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
       case n.substructureKind
       of ElifU:
         inc n # (elif
-        skip n # cond
-        inc n # cond; it is max interface so not need testing cond
+        let insertPos = c.depsStack.len
+        var syms: seq[SymId] = @[]
+        var s = addr c.semContexts[suffix]
+        scanExprSyms c, n, s, syms # cond
+        c.depsStack.add syms
         genGraph(c, n, suffix)
+        c.depsStack.shrink(insertPos)
         inc n # ParRi
       of ElseU:
         inc n # (else
@@ -184,6 +197,8 @@ proc prepareImports(c: var NifModule, n: var Cursor) =
       let isPublic: bool
       if n.stmtKind == TypeS:
         let decl = asTypeDecl(n)
+        if decl.name.kind != SymbolDef:
+          break nameSym # current nimony can't create symbols for toplevel types in when at SemcheckToplevelSyms.
         sym = decl.name.symId
         isPublic = decl.exported.kind != DotToken
       elif n.symKind.isRoutine:
