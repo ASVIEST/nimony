@@ -334,7 +334,8 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
       let condStart = s[].dest.len
       var phase = SemcheckBodies
       swap s[].phase, phase
-      semConstBoolExpr s[], c.conditions.nodes[cond.id], allowUnresolved = false # perfomed only on toplevel
+      var n = c.conditions.nodes[cond.id]
+      semConstBoolExpr s[], n, allowUnresolved = false # perfomed only on toplevel
       swap s[].phase, phase
       let condValue = cursorAt(s[].dest, condStart).exprKind
       canGenerate = canGenerate and (
@@ -349,8 +350,6 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     if canGenerate:
       semStmt s[], load.decl, false
     s[].pragmaStack.setLen(0) # {.pop.} fixed?
-  
-  
 
   for suffix in c.semContexts.keys:
     # ordinal SemcheckSignatures for not semchecked things
@@ -359,6 +358,9 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     inc n
     while n.kind != ParRi:
       if needOrdinalSemcheck(c, n, topo):
+        if n.stmtKind == WhenS:
+          echo n
+          echo c.conditions.nodes
         semStmt s[], n, false
       else:
         skip n
