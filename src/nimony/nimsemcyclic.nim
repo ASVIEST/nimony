@@ -49,10 +49,38 @@ proc semcheckToplevel(c: var SemContext; n0: Cursor): TokenBuf =
 
 
 type
+  Conditions = object
+    evaluated: seq[bool] # is condition already evaluated, index
+    nodes: seq[Cursor]
+  
+  Condition = object # Same condition can be used for different decls
+    id: int          # and shouldn't be evaluated twice
+    negated: bool
+
+proc `$`(c: Condition): string =
+  result = ""
+  if c.negated:
+    result.add "!"
+  result.add $c.id
+
+proc store(c: var Conditions, n: Cursor): Condition =
+  result = Condition(id: c.evaluated.len, negated: false)
+  c.evaluated.add false
+  c.nodes.add n
+
+proc negate(cond: var Condition) =
+  cond.negated = true
+
+type
   CyclicContext = object
     resolveGraph: Table[SymId, seq[SymId]]
     semContexts: Table[string, SemContext]
     depsStack: seq[SymId] # used to spread decls to inner contexts
+
+    conditions: Conditions
+    usedConditions: Table[SymId, seq[Condition]] # what conditions uses symbol
+    conditionsStack: seq[Condition] # used to spread conditions to inner contexts 
+    # negateConditionsStack/
 
 proc resolveSym(c: var CyclicContext, sym: SymId, syms: var seq[SymId]) =
   let suffix = extractModule(pool.syms[sym])
@@ -114,6 +142,8 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
       for sym in c.depsStack:
         c.resolveGraph.mgetOrPut(decl.name.symId, @[]).add sym
       
+      c.usedConditions.mgetOrPut(decl.name.symId, @[]).add c.conditionsStack
+
       var iter = initObjFieldIter()
       
       while nextField(iter, n, keepCase = false):
@@ -143,6 +173,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     # body1 (if a): need know a
     # body2 (if not a and b): need know a and b
     var depsPos = c.depsStack.len
+    var condsPos = c.conditionsStack.len
     var s = addr c.semContexts[suffix]
     inc n
     while n.kind != ParRi:
@@ -150,10 +181,12 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
       of ElifU:
         inc n # (elif
         var syms: seq[SymId] = @[]
+        c.conditionsStack.add store(c.conditions, n) # store condition
         scanExprSyms c, n, s, syms # cond
         c.depsStack.add syms
         genGraph(c, n, suffix)
         inc n # ParRi
+        c.conditionsStack[^1].negate()
         echo n.kind
       of ElseU:
         inc n # (else
@@ -164,6 +197,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         quit "Invalid ast"
     inc n # ParRi
     c.depsStack.shrink(depsPos)
+    c.conditionsStack.shrink(condsPos)
   else:
     skip n
 
@@ -294,9 +328,30 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     var load = tryLoadSym(sym)
     let suffix = extractModule(pool.syms[sym])
     var s = addr c.semContexts[suffix]
-    semStmt s[], load.decl, false
+    
+    var canGenerate = true # can become false if some of conditions is false
+    for cond in c.usedConditions.getOrDefault(sym, @[]):
+      let condStart = s[].dest.len
+      var phase = SemcheckBodies
+      swap s[].phase, phase
+      semConstBoolExpr s[], c.conditions.nodes[cond.id], allowUnresolved = false # perfomed only on toplevel
+      swap s[].phase, phase
+      let condValue = cursorAt(s[].dest, condStart).exprKind
+      canGenerate = canGenerate and (
+        condValue == FalseX and cond.negated or
+        condValue == TrueX and not cond.negated
+      )
+      c.conditions.evaluated[cond.id] = true
+      
+      endRead(s[].dest)
+      s[].dest.shrink(condStart)
+    
+    if canGenerate:
+      semStmt s[], load.decl, false
     s[].pragmaStack.setLen(0) # {.pop.} fixed?
   
+  
+
   for suffix in c.semContexts.keys:
     # ordinal SemcheckSignatures for not semchecked things
     var s = addr c.semContexts[suffix]
@@ -351,6 +406,16 @@ proc cyclicSem(fileNames: seq[string]) =
     for j in v:
       echo pool.syms[j]
     echo ""
+  
+  echo "conds: "
+  for i, v in c.usedConditions:
+    echo pool.syms[i]
+    echo ": "
+    for j in v:
+      echo c.conditions.nodes[j.id]
+      echo j.negated
+  echo "------"
+
   
   # Realy it not so important because
   # all declared syms already in prog.mem
