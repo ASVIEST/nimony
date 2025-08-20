@@ -52,6 +52,7 @@ type
   Conditions = object
     evaluated: seq[bool] # is condition already evaluated, index
     nodes: seq[Cursor]
+    cursorUids: Table[int, Condition] # node (condition) position to it's Condition
   
   Condition = object # Same condition can be used for different decls
     id: int          # and shouldn't be evaluated twice
@@ -67,9 +68,17 @@ proc store(c: var Conditions, n: Cursor): Condition =
   result = Condition(id: c.evaluated.len, negated: false)
   c.evaluated.add false
   c.nodes.add n
+  c.cursorUids[toUniqueId n] = result
 
-proc negate(cond: var Condition) =
+proc negate(c: var Conditions, cond: var Condition) =
   cond.negated = true
+  c.cursorUids[toUniqueId c.nodes[cond.id]].negated = true # this negated also should be updated
+
+proc hasCondition(c: sink Conditions, n: Cursor): bool =
+  toUniqueId(n) in c.cursorUids
+
+proc cursorToCondition(c: sink Conditions, n: Cursor): Condition =
+  c.cursorUids[toUniqueId n]
 
 type
   CyclicContext = object
@@ -80,7 +89,6 @@ type
     conditions: Conditions
     usedConditions: Table[SymId, seq[Condition]] # what conditions uses symbol
     conditionsStack: seq[Condition] # used to spread conditions to inner contexts 
-    # negateConditionsStack/
 
 proc resolveSym(c: var CyclicContext, sym: SymId, syms: var seq[SymId]) =
   let suffix = extractModule(pool.syms[sym])
@@ -186,7 +194,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         c.depsStack.add syms
         genGraph(c, n, suffix)
         inc n # ParRi
-        c.conditionsStack[^1].negate()
+        c.conditions.negate(c.conditionsStack[^1])
         echo n.kind
       of ElseU:
         inc n # (else
@@ -340,8 +348,7 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
       let condValue = cursorAt(s[].dest, condStart).exprKind
       canGenerate = canGenerate and (
         condValue == FalseX and cond.negated or
-        condValue == TrueX and not cond.negated
-      )
+        condValue == TrueX and not cond.negated)
       c.conditions.evaluated[cond.id] = true
       
       endRead(s[].dest)
@@ -358,9 +365,14 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     inc n
     while n.kind != ParRi:
       if needOrdinalSemcheck(c, n, topo):
-        if n.stmtKind == WhenS:
+        if n.stmtKind == WhenS: 
           echo n
-          echo c.conditions.nodes
+          var m = n
+          inc m
+          inc m
+          # echo 
+          echo toUniqueId(m)
+          echo c.conditions.nodes[c.conditions.cursorToCondition(m).id]
         semStmt s[], n, false
       else:
         skip n
