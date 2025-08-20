@@ -51,6 +51,7 @@ proc semcheckToplevel(c: var SemContext; n0: Cursor): TokenBuf =
 type
   Conditions = object
     evaluated: seq[bool] # is condition already evaluated, index
+    evalResults: seq[NimonyExpr]
     nodes: seq[Cursor]
     cursorUids: Table[int, Condition] # node (condition) position to it's Condition
   
@@ -67,12 +68,17 @@ proc `$`(c: Condition): string =
 proc store(c: var Conditions, n: Cursor): Condition =
   result = Condition(id: c.evaluated.len, negated: false)
   c.evaluated.add false
+  c.evalResults.add FalseX
   c.nodes.add n
   c.cursorUids[toUniqueId n] = result
 
+proc addEvalResult(c: var Conditions, cond: Condition, res: NimonyExpr) =
+  c.evaluated[cond.id] = true
+  c.evalResults[cond.id] = res
+
 proc negate(c: var Conditions, cond: var Condition) =
-  cond.negated = true
-  c.cursorUids[toUniqueId c.nodes[cond.id]].negated = true # this negated also should be updated
+  cond.negated = not cond.negated
+  c.cursorUids[toUniqueId c.nodes[cond.id]].negated = cond.negated # this negated also should be updated
 
 proc hasCondition(c: sink Conditions, n: Cursor): bool =
   toUniqueId(n) in c.cursorUids
@@ -308,6 +314,7 @@ proc topologicalSort(c: var CyclicContext): seq[SymId] =
 proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext, topo: sink seq[SymId]) =
   # try check that n not already semchecked after semchecking
   # topologicaly sorted decls
+  echo "n: ", n
   case n.stmtKind
   of StmtsS:
     inc n
@@ -320,8 +327,24 @@ proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext
       case n.substructureKind
       of ElifU:
         inc n # (elif
-        skip n # cond
-        applyOrdinalSemcheck(c, n, s, topo) # body
+        echo c.conditions.cursorUids
+        
+        if c.conditions.hasCondition n:
+          var cond = c.conditions.cursorToCondition n
+          skip n # cond
+          c.conditions.negate cond
+          let condValue = c.conditions.evalResults[cond.id]
+          if (condValue == FalseX and cond.negated or
+              condValue == TrueX and not cond.negated):
+            # we can resolve already evaluated when to prevent it resolution in future
+            
+            applyOrdinalSemcheck(c, n, s, topo) # body
+            skipToEnd n
+            break
+
+          c.conditions.negate cond
+        else:
+          skip n # cond
         inc n # ParRi
       of ElseU:
         inc n # (else
@@ -330,6 +353,7 @@ proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext
       else:
         echo n
         quit "Invalid ast"
+    
     inc n # ParRi
   of TypeS:
     let decl = asTypeDecl(n)
@@ -377,10 +401,11 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
       semConstBoolExpr s[], n, allowUnresolved = false # perfomed only on toplevel
       swap s[].phase, phase
       let condValue = cursorAt(s[].dest, condStart).exprKind
+      echo type(FalseX)
       canGenerate = canGenerate and (
         condValue == FalseX and cond.negated or
         condValue == TrueX and not cond.negated)
-      c.conditions.evaluated[cond.id] = true
+      c.conditions.addEvalResult(cond, condValue)
       
       endRead(s[].dest)
       s[].dest.shrink(condStart)
@@ -394,7 +419,8 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     var s = addr c.semContexts[suffix]
     var n = beginRead(trees[suffix])
     inc n
-    applyOrdinalSemcheck(c, n, s, topo)
+    while n.kind != ParRi:
+      applyOrdinalSemcheck(c, n, s, topo)
   
   for suffix in c.semContexts.keys:
     var s = addr c.semContexts[suffix]
