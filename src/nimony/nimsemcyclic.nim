@@ -305,21 +305,52 @@ proc topologicalSort(c: var CyclicContext): seq[SymId] =
   if len(result) != len(indegrees):
     error "cyclic type dependence detected"
 
-proc needOrdinalSemcheck(c: var CyclicContext, n: Cursor, topo: sink seq[SymId]): bool =
+proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext, topo: sink seq[SymId]) =
   # try check that n not already semchecked after semchecking
   # topologicaly sorted decls
   case n.stmtKind
+  of StmtsS:
+    inc n
+    while n.kind != ParRi:
+      applyOrdinalSemcheck(c, n, s, topo)
+    inc n # ParRi
+  of WhenS:
+    inc n
+    while n.kind != ParRi:
+      case n.substructureKind
+      of ElifU:
+        inc n # (elif
+        skip n # cond
+        applyOrdinalSemcheck(c, n, s, topo) # body
+        inc n # ParRi
+      of ElseU:
+        inc n # (else
+        applyOrdinalSemcheck(c, n, s, topo) # body
+        inc n # ParRi
+      else:
+        echo n
+        quit "Invalid ast"
+    inc n # ParRi
   of TypeS:
     let decl = asTypeDecl(n)
-    decl.name.kind == SymbolDef and decl.name.symId notin topo
+    if decl.name.kind == SymbolDef and decl.name.symId notin topo:
+      semStmt s[], n, false
+    else:
+      skip n
   elif n.symKind.isLocal:
     let decl = asLocal(n)
-    decl.name.kind == SymbolDef and decl.name.symId notin topo
+    if decl.name.kind == SymbolDef and decl.name.symId notin topo:
+      semStmt s[], n, false
+    else:
+      skip n
   elif n.symKind.isRoutine:
     let decl = asRoutine(n)
-    decl.name.kind == SymbolDef and decl.name.symId notin topo
+    if decl.name.kind == SymbolDef and decl.name.symId notin topo:
+      semStmt s[], n, false
+    else:
+      skip n
   else:
-    true
+    semStmt s[], n, false
 
 proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table[string, TokenBuf]) =
   # SemcheckSignatures is unusual because it working in topologic order on some decls.
@@ -363,19 +394,7 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     var s = addr c.semContexts[suffix]
     var n = beginRead(trees[suffix])
     inc n
-    while n.kind != ParRi:
-      if needOrdinalSemcheck(c, n, topo):
-        if n.stmtKind == WhenS: 
-          echo n
-          var m = n
-          inc m
-          inc m
-          # echo 
-          echo toUniqueId(m)
-          echo c.conditions.nodes[c.conditions.cursorToCondition(m).id]
-        semStmt s[], n, false
-      else:
-        skip n
+    applyOrdinalSemcheck(c, n, s, topo)
   
   for suffix in c.semContexts.keys:
     var s = addr c.semContexts[suffix]
