@@ -14,10 +14,10 @@
 
 ]#
 
-import std/[os, tables, sets, syncio, assertions, strutils, times]
+import std/[os, tables, sets, syncio, assertions, strutils, times, tables]
 import semos, nifconfig, nimony_model, nifindexes, symparser
 import ".." / gear2 / modnames, semdata
-import ".." / lib / tooldirs
+import ".." / lib / [tooldirs, peascc]
 import ".." / models / nifindex_tags
 
 include nifprelude
@@ -72,7 +72,7 @@ type
   DepContext = object
     forceRebuild: bool
     cmd: Command
-    nifler, nimsem: string
+    nifler, nimsem, nimsemcyclic: string
     config: NifConfig
     nodes: seq[Node]
     rootNode: Node
@@ -126,14 +126,6 @@ proc processInclude(c: var DepContext; it: var Cursor; current: Node) =
         else:
           discard "ignore recursive include"
 
-proc wouldCreateCycle(c: var DepContext; current: Node; p: FilePair): bool =
-  var it = current.id
-  while it != -1:
-    if c.nodes[it].files[0].modname == p.modname:
-      return true
-    it = c.nodes[it].parent
-  return false
-
 proc importSingleFile(c: var DepContext; f1: string; info: PackedLineInfo;
                       current: Node; isSystem: bool) =
   let f2 = resolveFileWrapper(c.config.paths, current.files[current.active].nimFile, f1)
@@ -148,12 +140,7 @@ proc importSingleFile(c: var DepContext; f1: string; info: PackedLineInfo;
     c.nodes.add imported
     traverseDeps c, p, imported
   else:
-    # add the dependency anyway unless it creates a cycle:
-    if wouldCreateCycle(c, current, p):
-      discard "ignore cycle"
-      echo "cycle detected: ", current.files[0].nimFile, " <-> ", p.nimFile
-    else:
-      current.deps.add existingNode
+    current.deps.add existingNode
 
 proc processPluginImport(c: var DepContext; f: ImportedFilename; info: PackedLineInfo; current: Node) =
   let f2 = resolveFileWrapper(c.config.paths, current.files[current.active].nimFile, f.path)
@@ -542,6 +529,19 @@ proc generatePluginSemInstructions(c: DepContext; v: Node; b: var Builder) =
     b.withTree "output":
       b.addStrLit c.config.indexFile(v.files[0], v.plugin)
 
+proc generateSemCyclicInstructions(c: DepContext; scc: seq[int]; b: var Builder) =
+  b.withTree "do":
+    b.addIdent "nimsemcyclic"
+    for id in scc:
+      let v = c.nodes[id]
+      b.withTree "input":
+        let pf = c.config.parsedFile(v.files[0])
+        b.addStrLit pf
+    for id in scc:
+      let v = c.nodes[id]
+      b.withTree "output":  
+        b.addStrLit c.config.semmedFile(v.files[0], v.plugin)
+
 proc generateFrontendBuildFile(c: DepContext; commandLineArgs: string; cmd: Command): string =
   result = c.config.nifcachePath / c.rootNode.files[0].modname & ".build.nif"
   var b = nifbuilder.open(result)
@@ -565,6 +565,22 @@ proc generateFrontendBuildFile(c: DepContext; commandLineArgs: string; cmd: Comm
       b.addKeyw "args"
       b.withTree "input":
         b.addIntLit 0  # main parsed file
+      b.withTree "output":
+        b.addIntLit 0  # semmed file output
+      b.withTree "output":
+        b.addIntLit 1  # index file output
+    
+    b.withTree "cmd":
+      b.addSymbolDef "nimsemcyclic"
+      b.addStrLit c.nimsemcyclic
+      b.addStrLit "run"
+      b.withTree "input":
+        b.addIntLit 0
+        b.addIntLit -1
+      b.addStrLit "outputs"
+      b.withTree "output":
+        b.addIntLit 0
+        b.addIntLit -1
 
     if cmd == DoCheck:
       b.withTree "cmd":
@@ -594,15 +610,30 @@ proc generateFrontendBuildFile(c: DepContext; commandLineArgs: string; cmd: Comm
         # index file output is not explicitly passed to the plugin!
         #b.withTree "output":
         #  b.addIntLit 1  # index file output
-
-    # Build rules for semantic checking
-    var i = 0
+    
+    # Maybe expensive, maybe better port algorithm to it
+    var invocations = initTable[int, seq[int]]()
     for v in c.nodes:
-      if v.plugin.len == 0:
-        generateSemInstructions c, v, b, i == 0
+      invocations[v.id] = v.deps
+    
+    let sccs = findSccs[int](invocations)
+    var nodeGroups = initTable[int, seq[int]]() # SCC id to node
+    for v, scc in sccs:
+      nodeGroups.mgetOrPut(scc, @[]).add v
+    
+    var i = 0
+    for scc, nodes in nodeGroups:
+      if nodes.len == 1:
+        let v = c.nodes[nodes[0]]
+        if v.plugin.len == 0:
+          generateSemInstructions c, v, b, i == 0
+        else:
+          generatePluginSemInstructions c, v, b
+        inc i
       else:
-        generatePluginSemInstructions c, v, b
-      inc i
+        # what do with plugins?
+        generateSemCyclicInstructions c, nodes, b
+        inc i, nodes.len
 
     # Build rules for parsing
     var seenFiles = initHashSet[string]()
@@ -643,7 +674,7 @@ proc generateCachedConfigFile(c: DepContext; passC, passL: string) =
 proc initDepContext(config: sink NifConfig; project, nifler: string; isFinal, forceRebuild: bool; moduleFlags: set[ModuleFlag]; cmd: Command): DepContext =
   result = DepContext(nifler: nifler, config: config, rootNode: nil, includeStack: @[],
     forceRebuild: forceRebuild, moduleFlags: moduleFlags, nimsem: findTool("nimsem"),
-    cmd: cmd, isGeneratingFinal: isFinal)
+    nimsemcyclic: findTool("nimsemcyclic"), cmd: cmd, isGeneratingFinal: isFinal)
   let p = result.toPair(project)
   result.rootNode = Node(files: @[p], id: 0, parent: -1, active: 0, isSystem: IsSystem in moduleFlags)
   result.nodes.add result.rootNode
