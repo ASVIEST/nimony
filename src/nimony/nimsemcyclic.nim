@@ -76,9 +76,8 @@ proc addEvalResult(c: var Conditions, cond: Condition, res: NimonyExpr) =
   c.evaluated[cond.id] = true
   c.evalResults[cond.id] = res
 
-proc makeNegative(c: var Conditions, cond: var Condition) =
+proc makeNegative(cond: var Condition) =
   cond.isNegative = true
-  c.cursorUids[toUniqueId c.nodes[cond.id]].isNegative = cond.isNegative # this isNegative also should be updated
 
 proc hasCondition(c: sink Conditions, n: Cursor): bool =
   toUniqueId(n) in c.cursorUids
@@ -200,7 +199,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         c.depsStack.add syms
         genGraph(c, n, suffix)
         inc n # ParRi
-        c.conditions.makeNegative(c.conditionsStack[^1]) # need for correct else
+        c.conditionsStack[^1].makeNegative # need for correct else
       of ElseU:
         inc n # (else
         genGraph(c, n, suffix)
@@ -211,10 +210,6 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     inc n # ParRi
     c.depsStack.shrink(depsPos)
     c.conditionsStack.shrink(condsPos)
-
-    # Notice that it make negative all conditions in c.conditions.isNegative
-    # It can be easily fixed but currently not need because it's only place
-    # where c.conditions.isNegative should used
   else:
     skip n
 
