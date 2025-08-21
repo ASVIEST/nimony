@@ -57,16 +57,16 @@ type
   
   Condition = object # Same condition can be used for different decls
     id: int          # and shouldn't be evaluated twice
-    negated: bool
+    isNegative: bool
 
 proc `$`(c: Condition): string =
   result = ""
-  if c.negated:
+  if c.isNegative:
     result.add "!"
   result.add $c.id
 
 proc store(c: var Conditions, n: Cursor): Condition =
-  result = Condition(id: c.evaluated.len, negated: false)
+  result = Condition(id: c.evaluated.len, isNegative: false)
   c.evaluated.add false
   c.evalResults.add FalseX
   c.nodes.add n
@@ -76,9 +76,9 @@ proc addEvalResult(c: var Conditions, cond: Condition, res: NimonyExpr) =
   c.evaluated[cond.id] = true
   c.evalResults[cond.id] = res
 
-proc negate(c: var Conditions, cond: var Condition) =
-  cond.negated = not cond.negated
-  c.cursorUids[toUniqueId c.nodes[cond.id]].negated = cond.negated # this negated also should be updated
+proc makeNegative(c: var Conditions, cond: var Condition) =
+  cond.isNegative = true
+  c.cursorUids[toUniqueId c.nodes[cond.id]].isNegative = cond.isNegative # this isNegative also should be updated
 
 proc hasCondition(c: sink Conditions, n: Cursor): bool =
   toUniqueId(n) in c.cursorUids
@@ -200,8 +200,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         c.depsStack.add syms
         genGraph(c, n, suffix)
         inc n # ParRi
-        c.conditions.negate(c.conditionsStack[^1])
-        echo n.kind
+        c.conditions.makeNegative(c.conditionsStack[^1]) # need for correct else
       of ElseU:
         inc n # (else
         genGraph(c, n, suffix)
@@ -212,6 +211,10 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     inc n # ParRi
     c.depsStack.shrink(depsPos)
     c.conditionsStack.shrink(condsPos)
+
+    # Notice that it make negative all conditions in c.conditions.isNegative
+    # It can be easily fixed but currently not need because it's only place
+    # where c.conditions.isNegative should used
   else:
     skip n
 
@@ -263,6 +266,8 @@ proc prepareImports(c: var NifModule, n: var Cursor) =
         isPublic = decl.exported.kind != DotToken
       elif n.symKind.isLocal:
         let decl = asLocal(n)
+        if decl.name.kind != SymbolDef:
+          break nameSym
         sym = decl.name.symId
         isPublic = decl.exported.kind != DotToken
       else:
@@ -322,30 +327,32 @@ proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext
       applyOrdinalSemcheck(c, n, s, topo)
     inc n # ParRi
   of WhenS:
-    inc n
+    # (top level) when implementation friendly to cached conditions
+    inc n # (when
     while n.kind != ParRi:
       case n.substructureKind
       of ElifU:
         inc n # (elif
-        echo c.conditions.cursorUids
         
         if c.conditions.hasCondition n:
+          # we know when cond so it can be already resolved
           var cond = c.conditions.cursorToCondition n
           skip n # cond
-          c.conditions.negate cond
           let condValue = c.conditions.evalResults[cond.id]
-          if (condValue == FalseX and cond.negated or
-              condValue == TrueX and not cond.negated):
-            # we can resolve already evaluated when to prevent it resolution in future
-            
+          if condValue == TrueX:
             applyOrdinalSemcheck(c, n, s, topo) # body
-            skipToEnd n
+            inc n # ParRi
+            skipUntilEnd n
             break
-
-          c.conditions.negate cond
+          else:
+            skip n # body
+            inc n # ParRi
         else:
           skip n # cond
-        inc n # ParRi
+          skip n # body
+          inc n # ParRi
+          error "Condition should be known at this point"
+      
       of ElseU:
         inc n # (else
         applyOrdinalSemcheck(c, n, s, topo) # body
@@ -357,22 +364,22 @@ proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext
     inc n # ParRi
   of TypeS:
     let decl = asTypeDecl(n)
-    if decl.name.kind == SymbolDef and decl.name.symId notin topo:
-      semStmt s[], n, false
-    else:
+    if decl.name.kind == SymbolDef and decl.name.symId in topo:
       skip n
+    else:
+      semStmt s[], n, false
   elif n.symKind.isLocal:
     let decl = asLocal(n)
-    if decl.name.kind == SymbolDef and decl.name.symId notin topo:
-      semStmt s[], n, false
-    else:
+    if decl.name.kind == SymbolDef and decl.name.symId in topo:
       skip n
+    else:
+      semStmt s[], n, false
   elif n.symKind.isRoutine:
     let decl = asRoutine(n)
-    if decl.name.kind == SymbolDef and decl.name.symId notin topo:
-      semStmt s[], n, false
-    else:
+    if decl.name.kind == SymbolDef and decl.name.symId in topo:
       skip n
+    else:
+      semStmt s[], n, false
   else:
     semStmt s[], n, false
 
@@ -394,22 +401,26 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     
     var canGenerate = true # can become false if some of conditions is false
     for cond in c.usedConditions.getOrDefault(sym, @[]):
-      let condStart = s[].dest.len
-      var phase = SemcheckBodies
-      swap s[].phase, phase
-      var n = c.conditions.nodes[cond.id]
-      semConstBoolExpr s[], n, allowUnresolved = false # perfomed only on toplevel
-      swap s[].phase, phase
-      let condValue = cursorAt(s[].dest, condStart).exprKind
-      echo type(FalseX)
-      canGenerate = canGenerate and (
-        condValue == FalseX and cond.negated or
-        condValue == TrueX and not cond.negated)
-      c.conditions.addEvalResult(cond, condValue)
+      let condValue: NimonyExpr
+      if not c.conditions.evaluated[cond.id]:
+        let condStart = s[].dest.len
+        var phase = SemcheckBodies
+        swap s[].phase, phase
+        var n = c.conditions.nodes[cond.id]
+        semConstBoolExpr s[], n, allowUnresolved = false # perfomed only on toplevel
+        swap s[].phase, phase
+        
+        condValue = cursorAt(s[].dest, condStart).exprKind
+        c.conditions.addEvalResult(cond, condValue)
+        endRead(s[].dest)
+        s[].dest.shrink(condStart)
+      else:
+        condValue = c.conditions.evalResults[cond.id]
       
-      endRead(s[].dest)
-      s[].dest.shrink(condStart)
-    
+      canGenerate = canGenerate and (
+        condValue == FalseX and cond.isNegative or
+        condValue == TrueX and not cond.isNegative)      
+
     if canGenerate:
       semStmt s[], load.decl, false
     s[].pragmaStack.setLen(0) # {.pop.} fixed?
@@ -472,7 +483,7 @@ proc cyclicSem(fileNames: seq[string]) =
     echo ": "
     for j in v:
       echo c.conditions.nodes[j.id]
-      echo j.negated
+      echo j.isNegative
   echo "------"
 
   
