@@ -145,7 +145,6 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
       genGraph(c, n, suffix)
     inc n # ParRi
   of TypeS:
-    echo "Scanning type: ", n
     let decl = asTypeDecl(n)
     n = decl.body
     inc n # skip `(object` token
@@ -311,10 +310,24 @@ proc topologicalSort(c: var CyclicContext): seq[SymId] =
   if len(result) != len(indegrees):
     error "cyclic type dependence detected"
 
+proc evalCond(c: var CyclicContext, s: ptr SemContext, cond: Condition): NimonyExpr =
+  if not c.conditions.evaluated[cond.id]:
+    let condStart = s[].dest.len
+    var phase = SemcheckBodies
+    swap s[].phase, phase
+    var n = c.conditions.nodes[cond.id]
+    semConstBoolExpr s[], n, allowUnresolved = false # perfomed only on toplevel
+    swap s[].phase, phase    
+    result = cursorAt(s[].dest, condStart).exprKind
+    c.conditions.addEvalResult(cond, result)
+    endRead(s[].dest)
+    s[].dest.shrink(condStart)
+  else:
+    result = c.conditions.evalResults[cond.id]
+
 proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext, topo: sink seq[SymId]) =
   # try check that n not already semchecked after semchecking
   # topologicaly sorted decls
-  echo "n: ", n
   case n.stmtKind
   of StmtsS:
     inc n
@@ -333,7 +346,7 @@ proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext
           # we know when cond so it can be already resolved
           var cond = c.conditions.cursorToCondition n
           skip n # cond
-          let condValue = c.conditions.evalResults[cond.id]
+          let condValue = evalCond(c, s, cond)
           if condValue == TrueX:
             applyOrdinalSemcheck(c, n, s, topo) # body
             inc n # ParRi
@@ -396,25 +409,11 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     
     var canGenerate = true # can become false if some of conditions is false
     for cond in c.usedConditions.getOrDefault(sym, @[]):
-      let condValue: NimonyExpr
-      if not c.conditions.evaluated[cond.id]:
-        let condStart = s[].dest.len
-        var phase = SemcheckBodies
-        swap s[].phase, phase
-        var n = c.conditions.nodes[cond.id]
-        semConstBoolExpr s[], n, allowUnresolved = false # perfomed only on toplevel
-        swap s[].phase, phase
-        
-        condValue = cursorAt(s[].dest, condStart).exprKind
-        c.conditions.addEvalResult(cond, condValue)
-        endRead(s[].dest)
-        s[].dest.shrink(condStart)
-      else:
-        condValue = c.conditions.evalResults[cond.id]
+      let condValue = evalCond(c, s, cond)
       
       canGenerate = canGenerate and (
         condValue == FalseX and cond.isNegative or
-        condValue == TrueX and not cond.isNegative)      
+        condValue == TrueX and not cond.isNegative)
 
     if canGenerate:
       semStmt s[], load.decl, false
