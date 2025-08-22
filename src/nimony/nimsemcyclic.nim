@@ -544,7 +544,6 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string]) =
       quit 1
 
     if reportErrors(s[]) == 0:
-      echo outputFileNames[i]
       writeOutput s[], outputFileNames[i]
     else:
       quit 1
