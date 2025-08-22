@@ -478,6 +478,11 @@ proc buildNimsem(showProgress = false) =
   let exe = "nimsem".addFileExt(ExeExt)
   robustMoveFile "src/nimony/" & exe, binDir() / exe
 
+proc buildNimsemcyclic(showProgress = false) =
+  exec "nim c src/nimony/nimsemcyclic.nim", showProgress
+  let exe = "nimsemcyclic".addFileExt(ExeExt)
+  robustMoveFile "src/nimony/" & exe, binDir() / exe
+
 proc buildNimony(showProgress = false) =
   exec "nim c src/nimony/nimony.nim", showProgress
   let exe = "nimony".addFileExt(ExeExt)
@@ -609,6 +614,7 @@ proc handleCmdLine =
 
   case primaryCmd
   of "all":
+    buildNimsemcyclic()
     buildNimsem()
     buildNimony()
     buildNifc()
@@ -648,6 +654,7 @@ proc handleCmdLine =
     case (if args.len > 0: args[0] else: "")
     of "", "all":
       buildNifler(showProgress)
+      buildNimsemcyclic(showProgress)
       buildNimsem(showProgress)
       buildNimony(showProgress)
       buildNifc(showProgress)
