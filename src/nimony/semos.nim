@@ -253,6 +253,8 @@ proc filenameVal*(n: var Cursor; res: var seq[ImportedFilename]; errors: var set
           elif n.kind == Ident and pool.strings[n.litId] == "cyclic":
             if not allowCyclic:
               errors.incl CyclicPragmaErr
+            success = true
+            inc n
         if not success:
           n = orig
           skip n

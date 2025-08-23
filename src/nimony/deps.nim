@@ -98,7 +98,7 @@ proc processInclude(c: var DepContext; it: var Cursor; current: Node) =
   inc x # skip the `include`
   while x.kind != ParRi:
     var errors: set[FilenameErr] = {}
-    filenameVal(x, files, errors, allowAs = false)
+    filenameVal(x, files, errors, allowAs = false, allowCyclic = false)
 
     if errors.len > 0:
       discard "ignore wrong `include` statement"
