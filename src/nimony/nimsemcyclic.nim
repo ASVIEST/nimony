@@ -4,7 +4,7 @@
 ## but fortunately SCC is usually small (maximum of 3-4 modules)
 
 
-import std / [parseopt, strutils, assertions, syncio, tables, osproc, deques, algorithm]
+import std / [parseopt, strutils, assertions, syncio, tables, osproc, deques, algorithm, sets]
 import ".." / lib / [nifstreams, nifcursors, bitabs, lineinfos, nifreader, nifbuilder, tooldirs, nifindexes]
 import ".." / nimony / [nimony_model, decls, symtabs, programs, semos, semdata, nifconfig, indexgen]
 include sem
@@ -27,7 +27,8 @@ proc initSemContext(fileName: string): SemContext =
     routine: SemRoutine(kind: NoSym),
     # commandLineArgs: commandLineArgs,
     canSelfExec: false, #TODO: check this one
-    pending: createTokenBuf())
+    pending: createTokenBuf(),
+    inCyclicGroup: true)
 
   for magic in ["typeof", "compiles", "defined", "declared"]:
     result.unoverloadableMagics.incl(pool.strings.getOrIncl(magic))
@@ -432,7 +433,77 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     s[].dest.addParRi
     trees[suffix] = move s[].dest
 
-proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string]) =
+proc hasCyclicPragma(x: var Cursor): bool =
+  if x.kind == ParLe and x.exprKind == PragmaxX:
+    var y = x
+    inc y
+    skip y
+    if y.substructureKind == PragmasU:
+      inc y
+      if y.kind == Ident and pool.strings[y.litId] == "cyclic":
+        return true
+  false
+
+proc checkCyclicPragma(c: sink CyclicContext, n: var Cursor, s: ptr SemContext) =
+  # We already in SCC, so only need to check that
+  # all modules defined in SCC marked with pragma
+  # other modules (of course not need to be marked)
+  # all very simple
+  case n.stmtKind
+  of StmtsS:
+    inc n
+    while n.kind != ParRi:
+      checkCyclicPragma(c, n, s)
+    inc n # ParRi
+  of WhenS:
+    inc n
+    while n.kind != ParRi:
+      case n.substructureKind
+      of ElifU:
+        inc n # (elif
+        skip n # cond; it is max interface so not need testing cond
+        checkCyclicPragma(c, n, s)
+        inc n # ParRi
+      of ElseU:
+        inc n # (else
+        checkCyclicPragma(c, n, s)
+        inc n # ParRi
+      else:
+        echo n
+        quit "Invalid ast"
+    inc n # ParRi
+  of ImportS, FromImportS, ImportExceptS:
+    let info = n.info
+    let origin = getFile(info)
+    var x = n
+    inc x
+    if hasCyclicPragma(x):
+      var files: seq[ImportedFilename] = @[]
+      var hasError = false
+      var hasCyclicPragmaError = false
+      filenameVal(x, files, hasError, true, hasCyclicPragmaError, true)
+      for f1 in files:
+        let f2 = resolveFile(s[].g.config.paths, origin, f1.path)
+        let suffix = moduleSuffix(f2, s[].g.config.paths)
+
+        if suffix notin c.semContexts: # O(1)
+          buildErr s[], info, "Unnecessary {.cyclic.} pragma: import `" & f1.name & "` does not form a cycle. Remove {.cyclic.} pragma"
+    else:
+      var files: seq[ImportedFilename] = @[]
+      var hasError = false
+      filenameVal(x, files, hasError, allowAs = true)
+      for f1 in files:
+        let f2 = resolveFile(s[].g.config.paths, origin, f1.path)
+        let suffix = moduleSuffix(f2, s[].g.config.paths)
+
+        if suffix in c.semContexts: # O(1)
+          buildErr s[], info, "Missing {.cyclic.} pragma: import `" & f1.name & "` is part of cycle. Mark it with {.cyclic.}"
+
+    skip n
+  else:
+    skip n
+
+proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyclicPragma: bool) =
   var c = CyclicContext()
   
   var trees = initTable[string, TokenBuf]()
@@ -452,10 +523,35 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string]) =
   
   for fileName in fileNames:
     let (_, suffix, _) = splitModulePath(fileName)
+    var s = addr c.semContexts[suffix]
+
+    if validateCyclicPragma:
+      var n1 = beginRead(trees[suffix])
+      takeTree s[], n1
+      var n2 = beginRead(trees[suffix])
+      
+      s[].dest.shrink(s[].dest.len - 1) # remove last ParRi to get space for errors
+      checkCyclicPragma(c, n2, s)
+      s[].dest.addParRi() # add last ParRi
+      trees[suffix] = move s[].dest
+      
     var n = beginRead(trees[suffix])
-    var tree = phaseX(c.semContexts[suffix], n, SemcheckImports)
+    var tree = phaseX(s[], n, SemcheckImports)
     trees[suffix] = tree
   
+  # Import errors on SCC much simpler to understand when it reported together
+  var hasErr = false
+  for fileName in fileNames:
+    let (_, suffix, _) = splitModulePath(fileName)
+    var s = addr c.semContexts[suffix]
+    swap s[].dest, trees[suffix]
+    if reportErrors(s[]) > 0:
+      hasErr = true
+    swap s[].dest, trees[suffix]
+  
+  if hasErr:
+    quit 1
+
   # Now we have importTab. It means that we can use anything with imported symbols.
   # For example, buildSymChoice should work with imported Symbols
 
@@ -575,6 +671,7 @@ Commands:
   outputs [module1.1.nif] [module2.1.nif]  Specify where semchecked files will be written
 
 Options:
+  --validateCyclicPragma                   Enables {.cyclic.} pragma checking
   --help, -h                               Show this help
   --version, -v                            Show version
 
@@ -590,6 +687,7 @@ proc handleCmdLine() =
     mode = mInputs
     outputId = 0
     outputFiles: seq[string] = @[]
+    validateCyclicPragma = false # check for correct {.cyclic.} usage
   
   for kind, key, val in getopt():
     case kind
@@ -608,6 +706,7 @@ proc handleCmdLine() =
       case key.normalize
       of "help", "h": cmd = cmdHelp
       of "version", "v": cmd = cmdVersion
+      of "validatecyclicpragma": validateCyclicPragma = true
       else:
         echo "Unknown option: --", key
         quit(1)
@@ -625,7 +724,7 @@ proc handleCmdLine() =
       echo "Each input file must correspond to exactly one output file"
       quit(1)
 
-    cyclicSem(sccFiles, outputFiles)
+    cyclicSem(sccFiles, outputFiles, validateCyclicPragma)
 
 
 when isMainModule:

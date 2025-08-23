@@ -157,6 +157,16 @@ proc processPluginImport(c: var DepContext; f: ImportedFilename; info: PackedLin
   else:
     current.deps.add existingNode
 
+proc filenameValSkipPragmas(x: var Cursor, files: var seq[ImportedFilename], hasError: var bool) =
+  if x.kind == ParLe and x.exprKind == PragmaxX:
+    inc x
+    filenameVal(x, files, hasError, allowAs = true)
+    skip x
+    if x.substructureKind == PragmasU:
+      skip x
+  else:
+    filenameVal(x, files, hasError, allowAs = true)
+
 proc processImport(c: var DepContext; it: var Cursor; current: Node) =
   let info = it.info
   var x = it
@@ -165,18 +175,10 @@ proc processImport(c: var DepContext; it: var Cursor; current: Node) =
   # ignore conditional imports:
   if x.stmtKind == WhenS: return
   while x.kind != ParRi:
-    if x.kind == ParLe and x.exprKind == PragmaxX:
-      var y = x
-      inc y
-      skip y
-      if y.substructureKind == PragmasU:
-        inc y
-        if y.kind == Ident and pool.strings[y.litId] == "cyclic":
-          continue
-
     var files: seq[ImportedFilename] = @[]
     var hasError = false
-    filenameVal(x, files, hasError, allowAs = true)
+    filenameValSkipPragmas(x, files, hasError)
+    
     if hasError:
       discard "ignore wrong `import` statement"
     else:
@@ -196,7 +198,7 @@ proc processSingleImport(c: var DepContext; it: var Cursor; current: Node) =
   if x.stmtKind == WhenS: return
   var files: seq[ImportedFilename] = @[]
   var hasError = false
-  filenameVal(x, files, hasError, allowAs = true)
+  filenameValSkipPragmas(x, files, hasError)
   if hasError:
     discard "ignore wrong `from` statement"
   else:
@@ -573,6 +575,7 @@ proc generateFrontendBuildFile(c: DepContext; commandLineArgs: string; cmd: Comm
     b.withTree "cmd":
       b.addSymbolDef "nimsemcyclic"
       b.addStrLit c.nimsemcyclic
+      b.addStrLit "--validateCyclicPragma"
       b.addStrLit "run"
       b.withTree "input":
         b.addIntLit 0

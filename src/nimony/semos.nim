@@ -257,6 +257,29 @@ proc filenameVal*(n: var Cursor; res: var seq[ImportedFilename]; hasError: var b
     hasError = true
     skip n
 
+proc filenameVal*(
+  x: var Cursor, files: var seq[ImportedFilename], 
+  hasError: var bool, allowAs: bool,
+  hasCyclicPragmaError: var bool,
+  inCyclicGroup: bool) =
+  # TODO: better to move it to filenameVal but make better "hasError"
+  if x.kind == ParLe and x.exprKind == PragmaxX:
+    inc x
+    filenameVal(x, files, hasError, allowAs)
+    if x.substructureKind == PragmasU:
+      while x.kind != ParRi:
+        inc x
+        if x.kind == Ident:
+          case pool.strings[x.litId]
+          of "cyclic":
+            if not inCyclicGroup: # only in SCC there no error
+              hasCyclicPragmaError = true
+          inc x
+        else:
+          skip x
+  else:
+    filenameVal(x, files, hasError, allowAs)
+
 proc replaceSubs*(fmt, currentFile: string; config: NifConfig): string =
   # Unpack Current File to Absolute
   let nifcache = config.nifcachePath

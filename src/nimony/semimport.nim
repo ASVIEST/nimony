@@ -90,38 +90,32 @@ proc importSingleFileConsiderExports(c: var SemContext; f1: ImportedFilename; or
         c.importedModules[source].exports[forward] = ex[1]
     exports = newExports
 
-proc cyclicImport(c: var SemContext; x: var Cursor) =
-  c.buildErr x.info, "cyclic module imports are not implemented"
-
 proc doImports(c: var SemContext; files: seq[ImportedFilename]; mode: ImportFilter; info: PackedLineInfo) =
   let origin = getFile(info)
   for f in files:
     importSingleFileConsiderExports c, f, origin, mode, info
 
-template maybeCyclic(c: var SemContext; x: var Cursor) =
-  if x.kind == ParLe and x.exprKind == PragmaxX:
-    var y = x
-    inc y
-    skip y
-    if y.substructureKind == PragmasU:
-      inc y
-      if y.kind == Ident and pool.strings[y.litId] == "cyclic":
-        cyclicImport(c, x)
-        return
+proc buildCyclicPragmaErr(c: var SemContext, files: seq[ImportedFilename], info: PackedLineInfo) =
+  let origin = getFile(info)
+  for f1 in files:
+    let f2 = resolveFile(c.g.config.paths, origin, f1.path)
+    buildErr c, info, "Unnecessary {.cyclic.} pragma: import `" & f1.name & "` does not form a cycle. Remove {.cyclic.} pragma"
 
 proc semImport(c: var SemContext; it: var Item) =
   let info = it.n.info
   var x = it.n
   skip it.n
   inc x # skip the `import`
-  maybeCyclic(c, x)
 
   var files: seq[ImportedFilename] = @[]
   var hasError = false
+  var hasCyclicPragmaError = false
   while x.kind != ParRi:
-    filenameVal(x, files, hasError, allowAs = true)
+    filenameVal(x, files, hasError, true, hasCyclicPragmaError, c.inCyclicGroup)
   if hasError:
     c.buildErr info, "wrong `import` statement"
+  elif hasCyclicPragmaError:
+    c.buildCyclicPragmaErr files, info
   else:
     doImports c, files, ImportFilter(kind: ImportAll), info
 
@@ -133,13 +127,15 @@ proc semImportExcept(c: var SemContext; it: var Item) =
   skip it.n
   inc x # skip the `importexcept`
 
-  maybeCyclic(c, x)
-
   var files: seq[ImportedFilename] = @[]
   var hasError = false
-  filenameVal(x, files, hasError, allowAs = true)
+  var hasCyclicPragmaError = false
+  var hasPragmaError = false
+  filenameVal(x, files, hasError, true, hasCyclicPragmaError, c.inCyclicGroup)
   if hasError:
     c.buildErr info, "wrong `import except` statement"
+  elif hasCyclicPragmaError:
+    c.buildCyclicPragmaErr files, info
   else:
     var excluded = initHashSet[StrId]()
     while x.kind != ParRi:
@@ -154,13 +150,14 @@ proc semFromImport(c: var SemContext; it: var Item) =
   skip it.n
   inc x # skip the `from`
 
-  maybeCyclic(c, x)
-
   var files: seq[ImportedFilename] = @[]
   var hasError = false
-  filenameVal(x, files, hasError, allowAs = true)
+  var hasCyclicPragmaError = false
+  filenameVal(x, files, hasError, true, hasCyclicPragmaError, c.inCyclicGroup)
   if hasError:
     c.buildErr info, "wrong `from import` statement"
+  elif hasCyclicPragmaError:
+    c.buildCyclicPragmaErr files, info
   else:
     var included = initHashSet[StrId]()
     while x.kind != ParRi:
