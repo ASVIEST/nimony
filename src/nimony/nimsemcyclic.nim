@@ -479,9 +479,8 @@ proc checkCyclicPragma(c: sink CyclicContext, n: var Cursor, s: ptr SemContext) 
     inc x
     if hasCyclicPragma(x):
       var files: seq[ImportedFilename] = @[]
-      var hasError = false
-      var hasCyclicPragmaError = false
-      filenameVal(x, files, hasError, true, hasCyclicPragmaError, true)
+      var errors: set[FilenameErr] = {}
+      filenameVal(x, files, errors, true, true)
       for f1 in files:
         let f2 = resolveFile(s[].g.config.paths, origin, f1.path)
         let suffix = moduleSuffix(f2, s[].g.config.paths)
@@ -490,8 +489,8 @@ proc checkCyclicPragma(c: sink CyclicContext, n: var Cursor, s: ptr SemContext) 
           buildErr s[], info, "Unnecessary {.cyclic.} pragma: import `" & f1.name & "` does not form a cycle. Remove {.cyclic.} pragma"
     else:
       var files: seq[ImportedFilename] = @[]
-      var hasError = false
-      filenameVal(x, files, hasError, allowAs = true)
+      var errors: set[FilenameErr] = {}
+      filenameVal(x, files, errors, true, true)
       for f1 in files:
         let f2 = resolveFile(s[].g.config.paths, origin, f1.path)
         let suffix = moduleSuffix(f2, s[].g.config.paths)

@@ -117,11 +117,15 @@ type
     name*: string ## extracted module name to define a sym for in `import`
     plugin*: string ## plugin name if any (usually empty)
     isSystem*: bool
+  
+  FilenameErr* = enum
+    UnspecifiedErr
+    CyclicPragmaErr
 
 proc moduleNameFromPath*(path: string): string =
   result = splitFile(path).name
 
-proc filenameVal*(n: var Cursor; res: var seq[ImportedFilename]; hasError: var bool; allowAs: bool) =
+proc filenameVal*(n: var Cursor; res: var seq[ImportedFilename]; errors: var set[FilenameErr]; allowAs: bool; allowCyclic: bool = true) =
   case n.kind
   of StringLit:
     let s = pool.strings[n.litId]
@@ -143,9 +147,9 @@ proc filenameVal*(n: var Cursor; res: var seq[ImportedFilename]; hasError: var b
     of OchoiceX, CchoiceX:
       inc n
       if n.kind == ParRi:
-        hasError = true
+        errors.incl UnspecifiedErr
       else:
-        filenameVal(n, res, hasError, allowAs)
+        filenameVal(n, res, errors, allowAs, allowCyclic)
       skipToEnd n
     of QuotedX:
       let s = pool.strings[takeUnquoted(n)]
@@ -156,39 +160,39 @@ proc filenameVal*(n: var Cursor; res: var seq[ImportedFilename]; hasError: var b
       inc x
       let opId = takeIdent(x)
       if opId == StrId(0):
-        hasError = true
+        errors.incl UnspecifiedErr
         return
       let op = pool.strings[opId]
       if op == "as":
         if not allowAs:
-          hasError = true
+          errors.incl UnspecifiedErr
           return
         if x.kind == ParRi:
-          hasError = true
+          errors.incl UnspecifiedErr
           return
         var rhs = x
         skip rhs # skip lhs
         if rhs.kind == ParRi:
-          hasError = true
+          errors.incl UnspecifiedErr
           return
         let aliasId = takeIdent(rhs)
         if aliasId == StrId(0):
-          hasError = true
+          errors.incl UnspecifiedErr
           return
         let alias = pool.strings[aliasId]
         var prefix: seq[ImportedFilename] = @[]
-        filenameVal(x, prefix, hasError, allowAs = false)
+        filenameVal(x, prefix, errors, allowAs = false, allowCyclic)
         if rhs.kind != ParRi or prefix.len == 0:
-          hasError = true
+          errors.incl UnspecifiedErr
         for pre in mitems(prefix):
           res.add ImportedFilename(path: pre.path, name: alias)
       else: # any operator, could restrict to slash-like
         var prefix: seq[ImportedFilename] = @[]
-        filenameVal(x, prefix, hasError, allowAs = false)
+        filenameVal(x, prefix, errors, allowAs = false, allowCyclic)
         var suffix: seq[ImportedFilename] = @[]
-        filenameVal(x, suffix, hasError, allowAs = allowAs)
+        filenameVal(x, suffix, errors, allowAs = allowAs, allowCyclic)
         if x.kind != ParRi or prefix.len == 0 or suffix.len == 0:
-          hasError = true
+          errors.incl UnspecifiedErr
         for pre in mitems(prefix):
           for suf in mitems(suffix):
             res.add ImportedFilename(path: pre.path & op & suf.path, name: suf.name, plugin: suf.plugin)
@@ -198,40 +202,40 @@ proc filenameVal*(n: var Cursor; res: var seq[ImportedFilename]; hasError: var b
       inc x
       let opId = takeIdent(x)
       if opId == StrId(0):
-        hasError = true
+        errors.incl UnspecifiedErr
         return
       let op = pool.strings[opId] # any operator, could restrict to slash-like
       var suffix: seq[ImportedFilename] = @[]
-      filenameVal(x, suffix, hasError, allowAs = allowAs)
+      filenameVal(x, suffix, errors, allowAs = allowAs, allowCyclic)
       if x.kind != ParRi or suffix.len == 0:
-        hasError = true
+        errors.incl UnspecifiedErr
       for suf in mitems(suffix):
         res.add ImportedFilename(path: op & suf.path, name: suf.name, plugin: suf.plugin)
     of ParX, TupX, BracketX:
       inc n
       if n.kind == ParRi:
-        hasError = true
+        errors.incl UnspecifiedErr
       else:
         while n.kind != ParRi:
-          filenameVal(n, res, hasError, allowAs)
+          filenameVal(n, res, errors, allowAs, allowCyclic)
       inc n
     of AconstrX, TupConstrX:
       inc n
       skip n # skip type
       if n.kind == ParRi:
-        hasError = true
+        errors.incl UnspecifiedErr
       else:
         while n.kind != ParRi:
-          filenameVal(n, res, hasError, allowAs)
+          filenameVal(n, res, errors, allowAs, allowCyclic)
       inc n
     of PragmaxX:
       let orig = n
       inc n
       let start = res.len
       if n.kind == ParRi:
-        hasError = true
+        errors.incl UnspecifiedErr
       else:
-        filenameVal(n, res, hasError, allowAs)
+        filenameVal(n, res, errors, allowAs, allowCyclic)
         var success = false
         if n.substructureKind == PragmasU:
           inc n
@@ -245,40 +249,20 @@ proc filenameVal*(n: var Cursor; res: var seq[ImportedFilename]; hasError: var b
                   success = true
                 inc n
                 if n.kind == ParRi: inc n
-                else: hasError = true
+                else: errors.incl UnspecifiedErr
+          elif n.kind == Ident and pool.strings[n.litId] == "cyclic":
+            if not allowCyclic:
+              errors.incl CyclicPragmaErr
         if not success:
           n = orig
           skip n
-          hasError = true
+          errors.incl UnspecifiedErr
     else:
-      hasError = true
+      errors.incl UnspecifiedErr
       skip n
   else:
-    hasError = true
+    errors.incl UnspecifiedErr
     skip n
-
-proc filenameVal*(
-  x: var Cursor, files: var seq[ImportedFilename], 
-  hasError: var bool, allowAs: bool,
-  hasCyclicPragmaError: var bool,
-  inCyclicGroup: bool) =
-  # TODO: better to move it to filenameVal but make better "hasError"
-  if x.kind == ParLe and x.exprKind == PragmaxX:
-    inc x
-    filenameVal(x, files, hasError, allowAs)
-    if x.substructureKind == PragmasU:
-      while x.kind != ParRi:
-        inc x
-        if x.kind == Ident:
-          case pool.strings[x.litId]
-          of "cyclic":
-            if not inCyclicGroup: # only in SCC there no error
-              hasCyclicPragmaError = true
-          inc x
-        else:
-          skip x
-  else:
-    filenameVal(x, files, hasError, allowAs)
 
 proc replaceSubs*(fmt, currentFile: string; config: NifConfig): string =
   # Unpack Current File to Absolute

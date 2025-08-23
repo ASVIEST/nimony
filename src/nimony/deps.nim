@@ -97,10 +97,10 @@ proc processInclude(c: var DepContext; it: var Cursor; current: Node) =
   skip it
   inc x # skip the `include`
   while x.kind != ParRi:
-    var hasError = false
-    filenameVal(x, files, hasError, allowAs = false)
+    var errors: set[FilenameErr] = {}
+    filenameVal(x, files, errors, allowAs = false)
 
-    if hasError:
+    if errors.len > 0:
       discard "ignore wrong `include` statement"
     else:
       for f1 in items(files):
@@ -157,16 +157,6 @@ proc processPluginImport(c: var DepContext; f: ImportedFilename; info: PackedLin
   else:
     current.deps.add existingNode
 
-proc filenameValSkipPragmas(x: var Cursor, files: var seq[ImportedFilename], hasError: var bool) =
-  if x.kind == ParLe and x.exprKind == PragmaxX:
-    inc x
-    filenameVal(x, files, hasError, allowAs = true)
-    skip x
-    if x.substructureKind == PragmasU:
-      skip x
-  else:
-    filenameVal(x, files, hasError, allowAs = true)
-
 proc processImport(c: var DepContext; it: var Cursor; current: Node) =
   let info = it.info
   var x = it
@@ -176,10 +166,10 @@ proc processImport(c: var DepContext; it: var Cursor; current: Node) =
   if x.stmtKind == WhenS: return
   while x.kind != ParRi:
     var files: seq[ImportedFilename] = @[]
-    var hasError = false
-    filenameValSkipPragmas(x, files, hasError)
+    var errors: set[FilenameErr] = {}
+    filenameVal(x, files, errors, true)
     
-    if hasError:
+    if errors.len > 0:
       discard "ignore wrong `import` statement"
     else:
       for f in files:
@@ -197,9 +187,9 @@ proc processSingleImport(c: var DepContext; it: var Cursor; current: Node) =
   # ignore conditional imports:
   if x.stmtKind == WhenS: return
   var files: seq[ImportedFilename] = @[]
-  var hasError = false
-  filenameValSkipPragmas(x, files, hasError)
-  if hasError:
+  var errors: set[FilenameErr] = {}
+  filenameVal(x, files, errors, true)
+  if errors.len > 0:
     discard "ignore wrong `from` statement"
   else:
     for f in files:

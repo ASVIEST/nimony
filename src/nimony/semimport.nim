@@ -2,15 +2,15 @@
 
 proc semInclude(c: var SemContext; it: var Item) =
   var files: seq[ImportedFilename] = @[]
-  var hasError = false
+  var errors: set[FilenameErr] = {}
   let info = it.n.info
   var x = it.n
   skip it.n
   inc x # skip the `include`
   while x.kind != ParRi:
-    filenameVal(x, files, hasError, allowAs = false)
+    filenameVal(x, files, errors, allowAs = false, allowCyclic = false)
 
-  if hasError:
+  if errors.len > 0:
     c.buildErr info, "wrong `include` statement"
   else:
     for f1 in items(files):
@@ -108,14 +108,14 @@ proc semImport(c: var SemContext; it: var Item) =
   inc x # skip the `import`
 
   var files: seq[ImportedFilename] = @[]
-  var hasError = false
-  var hasCyclicPragmaError = false
+  var errors: set[FilenameErr] = {}
   while x.kind != ParRi:
-    filenameVal(x, files, hasError, true, hasCyclicPragmaError, c.inCyclicGroup)
-  if hasError:
-    c.buildErr info, "wrong `import` statement"
-  elif hasCyclicPragmaError:
+    filenameVal(x, files, errors, true, c.inCyclicGroup)
+  
+  if CyclicPragmaErr in errors:
     c.buildCyclicPragmaErr files, info
+  elif errors.len > 0:
+    c.buildErr info, "wrong `import` statement"
   else:
     doImports c, files, ImportFilter(kind: ImportAll), info
 
@@ -128,14 +128,13 @@ proc semImportExcept(c: var SemContext; it: var Item) =
   inc x # skip the `importexcept`
 
   var files: seq[ImportedFilename] = @[]
-  var hasError = false
-  var hasCyclicPragmaError = false
-  var hasPragmaError = false
-  filenameVal(x, files, hasError, true, hasCyclicPragmaError, c.inCyclicGroup)
-  if hasError:
-    c.buildErr info, "wrong `import except` statement"
-  elif hasCyclicPragmaError:
+  var errors: set[FilenameErr] = {}
+  filenameVal(x, files, errors, true, c.inCyclicGroup)
+  
+  if CyclicPragmaErr in errors:
     c.buildCyclicPragmaErr files, info
+  elif errors.len > 0:
+    c.buildErr info, "wrong `import except` statement"
   else:
     var excluded = initHashSet[StrId]()
     while x.kind != ParRi:
@@ -151,13 +150,13 @@ proc semFromImport(c: var SemContext; it: var Item) =
   inc x # skip the `from`
 
   var files: seq[ImportedFilename] = @[]
-  var hasError = false
-  var hasCyclicPragmaError = false
-  filenameVal(x, files, hasError, true, hasCyclicPragmaError, c.inCyclicGroup)
-  if hasError:
-    c.buildErr info, "wrong `from import` statement"
-  elif hasCyclicPragmaError:
+  var errors: set[FilenameErr] = {}
+  filenameVal(x, files, errors, true, c.inCyclicGroup)
+  
+  if CyclicPragmaErr in errors:
     c.buildCyclicPragmaErr files, info
+  elif errors.len > 0:
+    c.buildErr info, "wrong `from import` statement"
   else:
     var included = initHashSet[StrId]()
     while x.kind != ParRi:
