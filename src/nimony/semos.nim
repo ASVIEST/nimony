@@ -254,7 +254,9 @@ proc filenameVal*(n: var Cursor; res: var seq[ImportedFilename]; errors: var set
             if not allowCyclic:
               errors.incl CyclicPragmaErr
             success = true
-            inc n
+            inc n # ident
+            inc n # pragmas ParRi
+            inc n # pragmax ParRi
         if not success:
           n = orig
           skip n
