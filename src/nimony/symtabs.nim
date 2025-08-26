@@ -22,32 +22,65 @@ type
     NormalScope, ToplevelScope, ImportScope
   Scope* {.acyclic.} = ref object
     tab*: Table[StrId, seq[Sym]] # 'seq' because of overloading
+    
     undo: seq[Table[StrId, int]] # len of 'key' to reset tab[key] to.
+    indexMap: Table[int, int] # id to index in undo
+    idMap: seq[int] # index to id in undo
+    shadowScopeId: int
+    freezed: Table[int, bool]
+    
     up*: Scope
     kind*: ScopeKind
 
-proc openShadowScope*(s: Scope) =
+proc openShadowScope*(s: Scope): int =
+  result = s.shadowScopeId
   s.undo.add initTable[StrId, int]()
+  s.idMap.add s.shadowScopeId
+  s.indexMap[s.shadowScopeId] = s.undo.len - 1
+  s.freezed[s.shadowScopeId] = false
+  inc s.shadowScopeId
 
-proc commitShadowScope*(s: Scope) =
-  let newLen = s.undo.len - 1
-  s.undo.shrink newLen
+proc freezeShadowScope*(s: Scope, id: int) {.inline.} =
+  s.freezed[id] = true
+
+proc freezeShadowScope*(s: Scope) {.inline.} =
+  s.freezeShadowScope s.idMap[s.undo.len - 1]
+
+proc commitShadowScope*(s: Scope, id: int) {.inline.} =
+  let idx = s.indexMap[id]
+  let last = s.undo.len - 1
+  if idx != last:
+    # because order of undo is not important.
+    # swap allow to have O(1) for commit
+    swap(s.undo[idx], s.undo[last])
+    swap(s.idMap[idx], s.idMap[last])
+    s.indexMap[s.idMap[idx]] = idx
+  
+  s.idMap.shrink last
+  s.indexMap.del(id)
+  s.undo.shrink last
+  s.freezed.del id
+
+proc rollbackShadowScope*(s: Scope, id: int) =
+  for k, oldLen in pairs(s.undo[s.indexMap[id]]):
+    s.tab[k].shrink oldLen
+  s.commitShadowScope id
+
+proc commitShadowScope*(s: Scope) {.inline.} =
+  s.commitShadowScope s.idMap[s.undo.len - 1]
 
 proc rollbackShadowScope*(s: Scope) =
-  let last = s.undo.len - 1
-  for k, oldLen in pairs(s.undo[last]):
-    s.tab[k].shrink oldLen
-  s.undo.shrink last
+  s.rollbackShadowScope s.idMap[s.undo.len - 1]
 
 proc remember(s: Scope; name: StrId) {.inline.} =
   let last = s.undo.len - 1
-  if last >= 0:
+  if last >= 0 and not s.freezed[s.idMap[last]]:
     if not s.undo[last].hasKey(name):
       s.undo[last][name] = s.tab.getOrDefault(name).len
 
 proc rememberZero(s: Scope; name: StrId) {.inline.} =
   let last = s.undo.len - 1
-  if last >= 0:
+  if last >= 0 and not s.freezed[s.idMap[last]]:
     if not s.undo[last].hasKey(name):
       s.undo[last][name] = 0
 

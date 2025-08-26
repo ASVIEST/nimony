@@ -884,7 +884,7 @@ proc semCall(c: var SemContext; it: var Item; flags: set[SemFlag]; source: Trans
   )
   inc it.n
   # open temp scope for args, has to be closed after matching:
-  openShadowScope(c.currentScope)
+  discard openShadowScope(c.currentScope)
   swap c.dest, cs.dest
   cs.fn = Item(n: it.n, typ: c.types.autoType)
   var argIndexes: seq[int] = @[]
