@@ -2162,10 +2162,13 @@ proc semTry(c: var SemContext; it: var Item) =
 proc semWhenImpl(c: var SemContext; it: var Item; mode: WhenMode) =
   let start = c.dest.len
   let info = it.n.info
+  var whenPos = cursorToPosition(c.firstInstr, it.n)
+  
   takeToken c, it.n
   var leaveUnresolved = false
   if it.n.substructureKind == ElifU:
     while it.n.substructureKind == ElifU:
+      let branchPos = cursorToPosition(c.firstInstr, it.n)
       takeToken c, it.n
       let condStart = c.dest.len
       var phase = SemcheckBodies
@@ -2176,6 +2179,12 @@ proc semWhenImpl(c: var SemContext; it: var Item; mode: WhenMode) =
       endRead(c.dest)
       if not leaveUnresolved:
         if condValue == TrueX:
+          for branch in c.whenBranches[whenPos]:
+            let shadowScopeId = c.whenBranchScopes[branch]
+            if branch == branchPos:
+              c.currentScope.commitShadowScope(shadowScopeId) # Should be toplevel scope
+            else:
+              c.currentScope.rollbackShadowScope(shadowScopeId)
           c.dest.shrink start
           case mode
           of NormalWhen:
@@ -2198,8 +2207,15 @@ proc semWhenImpl(c: var SemContext; it: var Item; mode: WhenMode) =
   else:
     buildErr c, it.n.info, "illformed AST: `elif` inside `when` expected"
   if it.n.substructureKind == ElseU:
+    let branchPos = cursorToPosition(c.firstInstr, it.n)
     takeToken c, it.n
     if not leaveUnresolved:
+      for branch in c.whenBranches[whenPos]:
+        let shadowScopeId = c.whenBranchScopes[branch]
+        if branch == branchPos:
+          c.currentScope.commitShadowScope(shadowScopeId) # Should be toplevel scope
+        else:
+          c.currentScope.rollbackShadowScope(shadowScopeId)
       c.dest.shrink start
       case mode
       of NormalWhen:
@@ -2225,10 +2241,15 @@ proc semToplevelWhen(c: var SemContext; it: var Item; mode: WhenMode) =
   # When expand toplevel to one more scope, so SemcheckTopLevelSyms should
   # continue working on inner tree. Instead of when on other phases it
   # always works for all branches
+  let whenPos = c.dest.len
+  c.whenBranches[whenPos] = @[]
   takeToken c, it.n # (when
   var leaveUnresolved = false
   if it.n.substructureKind == ElifU:
     while it.n.substructureKind == ElifU:
+      let branchPos = c.dest.len
+      c.whenBranches[whenPos].add branchPos
+      c.whenBranchScopes[branchPos] = c.currentScope.openShadowScope()
       takeToken c, it.n # (elif
       takeTree c, it.n # cond
       case mode
@@ -2237,15 +2258,57 @@ proc semToplevelWhen(c: var SemContext; it: var Item; mode: WhenMode) =
       of ObjectWhen:
         semObjectComponent c, it.n # currently impossible?
       takeParRi c, it.n # )
+      c.currentScope.freezeShadowScope()
   else:
     buildErr c, it.n.info, "illformed AST: `elif` inside `when` expected"
   if it.n.substructureKind == ElseU:
+    let branchPos = c.dest.len
+    c.whenBranches[whenPos].add branchPos
+    c.whenBranchScopes[branchPos] = c.currentScope.openShadowScope()
     takeToken c, it.n # (else
     case mode
     of NormalWhen:
       semExprMissingPhases c, it, SemcheckTopLevelSyms
     of ObjectWhen:
       semObjectComponent c, it.n # currently impossible
+    takeParRi c, it.n # )
+    c.currentScope.freezeShadowScope()
+  takeParRi c, it.n # )
+
+proc propogateWhenInfo(c: var SemContext; it: var Item) =
+  # allow to update positions in when info for next phase
+  let whenPos = c.dest.len
+  c.whenBranches.del(cursorToPosition(c.firstInstr, it.n))
+  # del before set because when pos can be equal between phases
+  c.whenBranches[whenPos] = @[]
+  
+  takeToken c, it.n # (when
+  var leaveUnresolved = false
+  if it.n.substructureKind == ElifU:
+    while it.n.substructureKind == ElifU:
+      let newBranchPos = c.dest.len
+      let oldBranchPos = cursorToPosition(c.firstInstr, it.n)
+      c.whenBranches[whenPos].add newBranchPos
+      if oldBranchPos != newBranchPos:
+        c.whenBranchScopes[newBranchPos] = c.whenBranchScopes[oldBranchPos]
+        c.whenBranchScopes.del(oldBranchPos)
+
+      takeToken c, it.n # (elif
+      takeTree c, it.n # cond
+      takeTree c, it.n # body
+      takeParRi c, it.n # )
+  else:
+    buildErr c, it.n.info, "illformed AST: `elif` inside `when` expected"
+  if it.n.substructureKind == ElseU:
+    let newBranchPos = c.dest.len
+    let oldBranchPos = cursorToPosition(c.firstInstr, it.n)
+    c.whenBranches[whenPos].add newBranchPos
+    if oldBranchPos != newBranchPos:
+      c.whenBranchScopes[newBranchPos] = c.whenBranchScopes[oldBranchPos]
+      c.whenBranchScopes.del(oldBranchPos)
+    
+    takeToken c, it.n # (else
+    takeTree c, it.n  # body
     takeParRi c, it.n # )
   takeParRi c, it.n # )
 
@@ -2255,8 +2318,7 @@ proc semWhen(c: var SemContext; it: var Item) =
   of SemcheckTopLevelSyms:
     semToplevelWhen(c, it, NormalWhen)
   of SemcheckImports:
-    c.takeTree it.n
-    return
+    propogateWhenInfo(c, it)
   of SemcheckSignatures, SemcheckBodies:
     # Now wrong, but need fix new bug: no error for using undefined symbol
     # XXX `const`s etc are not evaluated yet, so we cannot compile the `when` conditions
@@ -5177,6 +5239,7 @@ proc phaseX(c: var SemContext; n: Cursor; x: SemPhase): TokenBuf =
   assert n.stmtKind == StmtsS
   c.phase = x
   var n = n
+  c.firstInstr = n
   takeToken c, n
   while n.kind != ParRi:
     semStmt c, n, false

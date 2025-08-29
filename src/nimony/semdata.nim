@@ -135,6 +135,9 @@ type
     passC*: seq[string]
     genericInnerProcs*: HashSet[SymId] # these are special in that they must be instantiated in specific places
     expanded*: TokenBuf
+    firstInstr*: Cursor
+    whenBranches*: Table[int, seq[int]] # (when node pos to inner branches pos
+    whenBranchScopes*: Table[int, int] # (elif or (else node pos to shadow scope id
 
 proc typeToCanon*(buf: TokenBuf; start: int): string =
   result = ""
