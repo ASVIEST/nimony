@@ -136,8 +136,13 @@ type
     genericInnerProcs*: HashSet[SymId] # these are special in that they must be instantiated in specific places
     expanded*: TokenBuf
     firstInstr*: Cursor
-    whenBranches*: Table[int, seq[int]] # (when node pos to inner branches pos
-    whenBranchScopes*: Table[int, int] # (elif or (else node pos to shadow scope id
+    
+    currentWhenId*: int
+    whenPhase*: SemPhase
+    whenIdx*: Table[int, int] # (when node pos to (when node id. Using node pos only here much more safe
+    whenIdxOld*: Table[int, int] # uses old poses
+    whenBranches*: Table[int, seq[int]] # (when node id to inner branches id (branch id unique only in when)
+    whenBranchScopes*: Table[int, Scope] # (elif or (else node id to shadow scope id
 
 proc typeToCanon*(buf: TokenBuf; start: int): string =
   result = ""
