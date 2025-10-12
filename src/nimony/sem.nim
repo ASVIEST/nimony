@@ -2324,11 +2324,6 @@ proc semWhen(c: var SemContext; it: var Item) =
   of SemcheckImports:
     c.takeTree it.n
   of SemcheckSignatures, SemcheckBodies:
-    # Now wrong, but need fix new bug: no error for using undefined symbol
-    # XXX `const`s etc are not evaluated yet, so we cannot compile the `when` conditions
-    # so symbols inside of `when` are not defined until `SemcheckSignatures`
-    # effectively this means types defined in `when` cannot be used before they are declared
-    # but this was already not possible in original Nim
     semWhenImpl(c, it, NormalWhen)
   dec c.inWhen
 
@@ -5430,10 +5425,6 @@ proc semcheckCore(c: var SemContext; n0: Cursor) =
     importSingleFile(c, systemFile, "", ImportFilter(kind: ImportAll), n0.info)
 
   var n1 = phaseX(c, n0, SemcheckTopLevelSyms)
-
-  var s = $beginRead(n1)
-  writeFile("wtf.nif", s)
-
   var n2 = phaseX(c, beginRead(n1), SemcheckImports)
   var n3 = phaseX(c, beginRead(n2), SemcheckSignatures)
 
