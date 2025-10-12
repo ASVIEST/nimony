@@ -2162,14 +2162,31 @@ proc semTry(c: var SemContext; it: var Item) =
 proc semWhenImpl(c: var SemContext; it: var Item; mode: WhenMode) =
   let start = c.dest.len
   let info = it.n.info
-  var whenId = c.whenIdx[cursorToPosition(c.firstInstr, it.n)]
-  
-  var branchId = 0
   takeToken c, it.n
+
+  let usesId = it.n.substructureKind == IdU
+  let whenId: int
+  if usesId:
+    inc it.n # (id
+    whenId = pool.integers[it.n.intId]
+    inc it.n
+    inc it.n # )
+  else:
+    whenId = -1
+  
   var leaveUnresolved = false
   if it.n.substructureKind == ElifU:
     while it.n.substructureKind == ElifU:
       takeToken c, it.n
+      let branchId: int
+      if usesId:
+        inc it.n # (id
+        branchId = pool.integers[it.n.intId]
+        inc it.n
+        inc it.n # )
+      else:
+        branchId = -1
+
       let condStart = c.dest.len
       var phase = SemcheckBodies
       swap c.phase, phase
@@ -2179,10 +2196,11 @@ proc semWhenImpl(c: var SemContext; it: var Item; mode: WhenMode) =
       endRead(c.dest)
       if not leaveUnresolved:
         if condValue == TrueX:
-          for branch in c.whenBranches[whenId]:
-            if branch == branchId:
-              c.currentScope.mergeScope(c.whenBranchScopes[branch]) # Should be toplevel scope
-              break
+          if usesId:
+            for branch in c.whenBranches[whenId]:
+              if branch == branchId:
+                c.currentScope.mergeScope(c.whenBranchScopes[branch]) # Should be toplevel scope
+                break
           c.dest.shrink start
           case mode
           of NormalWhen:
@@ -2202,16 +2220,25 @@ proc semWhenImpl(c: var SemContext; it: var Item; mode: WhenMode) =
       else:
         takeTree c, it.n
       takeParRi c, it.n
-      inc branchId
   else:
     buildErr c, it.n.info, "illformed AST: `elif` inside `when` expected"
   if it.n.substructureKind == ElseU:
     takeToken c, it.n
+    let branchId: int
+    if usesId:
+      inc it.n # (id
+      branchId = pool.integers[it.n.intId]
+      inc it.n
+      inc it.n # )
+    else:
+      branchId = -1
+    
     if not leaveUnresolved:
-      for branch in c.whenBranches[whenId]:
-        if branch == branchId:
-          c.currentScope.mergeScope(c.whenBranchScopes[branch]) # Should be toplevel scope
-          break
+      if usesId:
+        for branch in c.whenBranches[whenId]:
+          if branch == branchId:
+            c.currentScope.mergeScope(c.whenBranchScopes[branch]) # Should be toplevel scope
+            break
       c.dest.shrink start
       case mode
       of NormalWhen:
@@ -2237,69 +2264,65 @@ proc semToplevelWhen(c: var SemContext; it: var Item; mode: WhenMode) =
   # When expand toplevel to one more scope, so SemcheckTopLevelSyms should
   # continue working on inner tree. Instead of when on other phases it
   # always works for all branches
-  let whenPos = c.dest.len
-  let whenId = c.currentWhenId
-  c.whenIdx[whenPos] = whenId
-  c.whenIdxOld[whenPos] = whenId
-  c.whenBranches[whenId] = @[]
+  var n = it.n
+  inc n
+  if n.substructureKind == IdU:
+    # already semchecked
+    # (can be reached in nested when via semExprMissingPhases)
+    c.takeTree it.n
+    return
+
   takeToken c, it.n # (when
+  c.dest.buildTree IdU, NoLineInfo:
+    c.dest.addIntLit c.currentWhen
+  c.whenBranches[c.currentWhen] = @[]
+  let currentWhen = c.currentWhen
+  inc c.currentWhen # for inner when nodes
+
   var leaveUnresolved = false
-  var branchId = 0
   if it.n.substructureKind == ElifU:
     while it.n.substructureKind == ElifU:
-      echo c.whenBranches
-      c.whenBranches[whenId].add branchId
+      c.whenBranches[currentWhen].add c.currentWhenBranch
       withNewScope c:
         c.currentScope.kind = ToplevelScope
-        c.whenBranchScopes[branchId] = c.currentScope
+        c.whenBranchScopes[c.currentWhenBranch] = c.currentScope
         takeToken c, it.n # (elif
+        c.dest.buildTree IdU, NoLineInfo:
+          c.dest.addIntLit c.currentWhenBranch
         takeTree c, it.n # cond
+        inc c.currentWhenBranch # for inner when nodes
         case mode
         of NormalWhen:
           semExprMissingPhases c, it, SemcheckTopLevelSyms
         of ObjectWhen:
           semObjectComponent c, it.n # currently impossible?
         takeParRi c, it.n # )
-      inc branchId
   else:
     buildErr c, it.n.info, "illformed AST: `elif` inside `when` expected"
   if it.n.substructureKind == ElseU:
-    c.whenBranches[whenId].add branchId
+    c.whenBranches[currentWhen].add c.currentWhenBranch
     withNewScope c:
       c.currentScope.kind = ToplevelScope
-      c.whenBranchScopes[branchId] = c.currentScope
+      c.whenBranchScopes[c.currentWhenBranch] = c.currentScope
       takeToken c, it.n # (else
+      c.dest.buildTree IdU, NoLineInfo:
+        c.dest.addIntLit c.currentWhenBranch
+      inc c.currentWhenBranch # for inner when nodes
       case mode
       of NormalWhen:
         semExprMissingPhases c, it, SemcheckTopLevelSyms
       of ObjectWhen:
         semObjectComponent c, it.n # currently impossible
       takeParRi c, it.n # )
-    inc branchId
   takeParRi c, it.n # )
-  inc c.currentWhenId
-
-proc propogateWhenInfo(c: var SemContext; it: var Item) =
-  # allow to update positions in when info for next phase
-  let oldWhenPos = cursorToPosition(c.firstInstr, it.n)
-  let whenPos = c.dest.len
-
-  let id = c.whenIdxOld[oldWhenPos]
-  c.whenIdx.del(oldWhenPos)
-  c.whenIdx[whenPos] = id
-
-  skip it.n
-  
 
 proc semWhen(c: var SemContext; it: var Item) =
   inc c.inWhen
-  if c.whenPhase != c.phase:
-    c.whenIdxOld = c.whenIdx
   case c.phase
   of SemcheckTopLevelSyms:
     semToplevelWhen(c, it, NormalWhen)
   of SemcheckImports:
-    propogateWhenInfo(c, it)
+    c.takeTree it.n
   of SemcheckSignatures, SemcheckBodies:
     # Now wrong, but need fix new bug: no error for using undefined symbol
     # XXX `const`s etc are not evaluated yet, so we cannot compile the `when` conditions
@@ -2308,7 +2331,6 @@ proc semWhen(c: var SemContext; it: var Item) =
     # but this was already not possible in original Nim
     semWhenImpl(c, it, NormalWhen)
   dec c.inWhen
-  c.whenPhase = c.phase
 
 proc semCaseOfValueImpl(c: var SemContext; it: var Item; selectorType: TypeCursor;
                     seen: var seq[(xint, xint)]) =
@@ -5219,14 +5241,8 @@ proc phaseX(c: var SemContext; n: Cursor; x: SemPhase): TokenBuf =
   assert n.stmtKind == StmtsS
   c.phase = x
   var n = n
-  c.firstInstr = n
-  echo "FIRST INSTR: ", toUniqueId(c.firstInstr)
-  # echo "A: ", n.toUniqueId
   takeToken c, n
-  # echo "B: ", n.toUniqueId
   while n.kind != ParRi:
-    # echo "S: ", n.toUniqueId
-    # echo n.stmtKind
     semStmt c, n, false
   takeParRi c, n
   result = move c.dest
@@ -5414,6 +5430,10 @@ proc semcheckCore(c: var SemContext; n0: Cursor) =
     importSingleFile(c, systemFile, "", ImportFilter(kind: ImportAll), n0.info)
 
   var n1 = phaseX(c, n0, SemcheckTopLevelSyms)
+
+  var s = $beginRead(n1)
+  writeFile("wtf.nif", s)
+
   var n2 = phaseX(c, beginRead(n1), SemcheckImports)
   var n3 = phaseX(c, beginRead(n2), SemcheckSignatures)
 

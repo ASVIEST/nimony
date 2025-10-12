@@ -83,7 +83,7 @@
 | `(keepovf X X)` | NifcStmt | keep overflow flag statement |
 | `(scope S*)` | NifcStmt, NimonyStmt | explicit scope annotation, like `stmts` |
 | `(if (elif X X)+ (else X)?)` | NifcStmt, NimonyStmt, NiflerKind | if statement header |
-| `(when (elif X X)+ (else X)?)` | NimonyStmt, NimonyOther, NiflerKind | when statement header |
+| `(when (id INTLIT)? (elif X X)+ (else X)?)` | NimonyStmt, NimonyOther, NiflerKind | when statement header |
 | `(elif X X)` | NifcOther, NimonyOther, NiflerKind | pair of (condition, action) |
 | `(else X)` | NifcOther, NimonyOther, NiflerKind | `else` action |
 | `(typevars (typevar ...)*)` | NimonyOther, NiflerKind | type variable/generic parameters |
@@ -314,3 +314,4 @@
 | `(pop)`      | NimonyPragma | `pop` pragma |
 | `(passL X)`  | NimonyPragma | `passL` pragma adds options to the backend linker |
 | `(passC X)`  | NimonyPragma | `passC` pragma adds options to the backend compiler |
+| `(id INTLIT)` | NimonyOther | used to add unique id to node |

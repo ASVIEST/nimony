@@ -137,12 +137,10 @@ type
     expanded*: TokenBuf
     firstInstr*: Cursor
     
-    currentWhenId*: int
-    whenPhase*: SemPhase
-    whenIdx*: Table[int, int] # (when node pos to (when node id. Using node pos only here much more safe
-    whenIdxOld*: Table[int, int] # uses old poses
-    whenBranches*: Table[int, seq[int]] # (when node id to inner branches id (branch id unique only in when)
-    whenBranchScopes*: Table[int, Scope] # (elif or (else node id to shadow scope id
+    currentWhen*: int
+    currentWhenBranch*: int
+    whenBranches*: Table[int, seq[int]] # when id to branch id's
+    whenBranchScopes*: Table[int, Scope] # branch id to scope
 
 proc typeToCanon*(buf: TokenBuf; start: int): string =
   result = ""

@@ -270,9 +270,10 @@ type
     UnpacktupU = (ord(UnpacktupTagId), "unpacktup")  ## unpack tuple
     ExceptU = (ord(ExceptTagId), "except")  ## except subsection
     FinU = (ord(FinTagId), "fin")  ## finally subsection
+    IdU = (ord(IdTagId), "id")  ## used to add unique id to node
 
 proc rawTagIsNimonyOther*(raw: TagEnum): bool {.inline.} =
-  raw in {NilTagId, NotnilTagId, KvTagId, VvTagId, RangeTagId, RangesTagId, ParamTagId, TypevarTagId, EfldTagId, FldTagId, WhenTagId, ElifTagId, ElseTagId, TypevarsTagId, CaseTagId, OfTagId, StmtsTagId, ParamsTagId, PragmasTagId, EitherTagId, JoinTagId, UnpackflatTagId, UnpacktupTagId, ExceptTagId, FinTagId}
+  raw in {NilTagId, NotnilTagId, KvTagId, VvTagId, RangeTagId, RangesTagId, ParamTagId, TypevarTagId, EfldTagId, FldTagId, WhenTagId, ElifTagId, ElseTagId, TypevarsTagId, CaseTagId, OfTagId, StmtsTagId, ParamsTagId, PragmasTagId, EitherTagId, JoinTagId, UnpackflatTagId, UnpacktupTagId, ExceptTagId, FinTagId, IdTagId}
 
 type
   NimonyPragma* = enum
@@ -393,4 +394,3 @@ type
 
 proc rawTagIsControlFlowKind*(raw: TagEnum): bool {.inline.} =
   raw in {IteTagId, GraphTagId, ForbindTagId, KillTagId}
-
