@@ -189,10 +189,12 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     var condsPos = c.conditionsStack.len
     var s = addr c.semContexts[suffix]
     inc n
+    skip n # (id )
     while n.kind != ParRi:
       case n.substructureKind
       of ElifU:
         inc n # (elif
+        skip n # (id )
         var syms: seq[SymId] = @[]
         c.conditionsStack.add store(c.conditions, n) # store condition
         scanExprSyms c, n, s, syms # cond
@@ -202,6 +204,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         c.conditionsStack[^1].makeNegative # need for correct else
       of ElseU:
         inc n # (else
+        skip n # (id )
         genGraph(c, n, suffix)
         inc n # ParRi
       else:
@@ -230,15 +233,18 @@ proc prepareImports(c: var NifModule, n: var Cursor) =
     inc n # ParRi
   of WhenS:
     inc n
+    skip n # (id )
     while n.kind != ParRi:
       case n.substructureKind
       of ElifU:
         inc n # (elif
+        skip n # (id )
         skip n # cond; it is max interface so not need testing cond
         prepareImports(c, n)
         inc n # ParRi
       of ElseU:
         inc n # (else
+        skip n # (id )
         prepareImports(c, n)
         inc n # ParRi
       else:
@@ -338,17 +344,24 @@ proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext
   of WhenS:
     # (top level) when implementation friendly to cached conditions
     inc n # (when
+    skip n # (id )
     while n.kind != ParRi:
       case n.substructureKind
       of ElifU:
         inc n # (elif
-        
+
+        inc n # (id
+        let branchId = pool.integers[n.intId]
+        inc n
+        inc n # )
+
         if c.conditions.hasCondition n:
           # we know when cond so it can be already resolved
           var cond = c.conditions.cursorToCondition n
           skip n # cond
           let condValue = evalCond(c, s, cond)
           if condValue == TrueX:
+            s[].currentScope.mergeScope(s[].whenBranchScopes[branchId])
             applyOrdinalSemcheck(c, n, s, topo) # body
             inc n # ParRi
             skipUntilEnd n
@@ -364,6 +377,13 @@ proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext
       
       of ElseU:
         inc n # (else
+
+        inc n # (id
+        let branchId = pool.integers[n.intId]
+        inc n
+        inc n # )
+        s[].currentScope.mergeScope(s[].whenBranchScopes[branchId])
+
         applyOrdinalSemcheck(c, n, s, topo) # body
         inc n # ParRi
       else:
@@ -457,15 +477,18 @@ proc checkCyclicPragma(c: sink CyclicContext, n: var Cursor, s: ptr SemContext) 
     inc n # ParRi
   of WhenS:
     inc n
+    skip n # (id )
     while n.kind != ParRi:
       case n.substructureKind
       of ElifU:
         inc n # (elif
+        skip n # (id )
         skip n # cond; it is max interface so not need testing cond
         checkCyclicPragma(c, n, s)
         inc n # ParRi
       of ElseU:
         inc n # (else
+        skip n # (id )
         checkCyclicPragma(c, n, s)
         inc n # ParRi
       else:
