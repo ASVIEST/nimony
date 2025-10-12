@@ -11,7 +11,7 @@ include sem
 
 
 proc initSemContext(fileName: string): SemContext =
-  let (_, file, _) = splitModulePath(fileName)
+  let outp = splitModulePath(fileName)
   var moduleFlags: set[ModuleFlag] = {}
   moduleFlags.incl IsMain # TODO: use real moduleFlags
   var config = initNifConfig("")
@@ -20,7 +20,7 @@ proc initSemContext(fileName: string): SemContext =
   result = SemContext(
     dest: createTokenBuf(),
     types: createBuiltinTypes(),
-    thisModuleSuffix: file,
+    thisModuleSuffix: outp.name,
     moduleFlags: moduleFlags,
     g: ProgramContext(config: config),
     phase: SemcheckTopLevelSyms,
@@ -533,7 +533,7 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
     var sc = initSemContext(fileName)
     var n0 = setupProgram(fileName, fileName & ".tmp.nif") # TODO: replace
     
-    let (_, suffix, _) = splitModulePath(fileName)
+    let suffix = splitModulePath(fileName).name
     trees[suffix] = semcheckToplevel(sc, n0)
     c.semContexts[suffix] = sc
 
@@ -544,7 +544,7 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
     prepareImports(prog.mods[suffix], n)
   
   for fileName in fileNames:
-    let (_, suffix, _) = splitModulePath(fileName)
+    let suffix = splitModulePath(fileName).name
     var s = addr c.semContexts[suffix]
 
     if validateCyclicPragma:
@@ -564,7 +564,7 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
   # Import errors on SCC much simpler to understand when it reported together
   var hasErr = false
   for fileName in fileNames:
-    let (_, suffix, _) = splitModulePath(fileName)
+    let suffix = splitModulePath(fileName).name
     var s = addr c.semContexts[suffix]
     swap s[].dest, trees[suffix]
     if reportErrors(s[]) > 0:
@@ -578,7 +578,7 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
   # For example, buildSymChoice should work with imported Symbols
 
   for fileName in fileNames:
-    let (_, suffix, _) = splitModulePath(fileName)
+    let suffix = splitModulePath(fileName).name
     var n = beginRead(trees[suffix])
     c.genGraph n, suffix
   
@@ -620,7 +620,7 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
   
   var i = 0
   for fileName in fileNames:
-    let (_, suffix, _) = splitModulePath(fileName)
+    let suffix = splitModulePath(fileName).name
     var n = beginRead(trees[suffix])
     
     var s = addr c.semContexts[suffix]

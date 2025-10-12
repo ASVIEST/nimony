@@ -557,10 +557,6 @@ proc generateFrontendBuildFile(c: DepContext; commandLineArgs: string; cmd: Comm
       b.addKeyw "args"
       b.withTree "input":
         b.addIntLit 0  # main parsed file
-      b.withTree "output":
-        b.addIntLit 0  # semmed file output
-      b.withTree "output":
-        b.addIntLit 1  # index file output
     
     b.withTree "cmd":
       b.addSymbolDef "nimsemcyclic"
