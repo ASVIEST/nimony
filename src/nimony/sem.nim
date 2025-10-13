@@ -2197,10 +2197,7 @@ proc semWhenImpl(c: var SemContext; it: var Item; mode: WhenMode) =
       if not leaveUnresolved:
         if condValue == TrueX:
           if usesId:
-            for branch in c.whenBranches[whenId]:
-              if branch == branchId:
-                c.currentScope.mergeScope(c.whenBranchScopes[branch]) # Should be toplevel scope
-                break
+            c.currentScope.mergeScope(c.whenBranchScopes[branchId]) # Should be toplevel scope
           c.dest.shrink start
           case mode
           of NormalWhen:
@@ -2235,10 +2232,7 @@ proc semWhenImpl(c: var SemContext; it: var Item; mode: WhenMode) =
     
     if not leaveUnresolved:
       if usesId:
-        for branch in c.whenBranches[whenId]:
-          if branch == branchId:
-            c.currentScope.mergeScope(c.whenBranchScopes[branch]) # Should be toplevel scope
-            break
+        c.currentScope.mergeScope(c.whenBranchScopes[branchId]) # Should be toplevel scope
       c.dest.shrink start
       case mode
       of NormalWhen:
