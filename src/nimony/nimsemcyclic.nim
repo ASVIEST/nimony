@@ -4,7 +4,7 @@
 ## but fortunately SCC is usually small (maximum of 3-4 modules)
 
 
-import std / [parseopt, strutils, assertions, syncio, tables, osproc, deques, algorithm, sets]
+import std / [parseopt, strutils, assertions, syncio, tables, osproc, deques, algorithm, sets, hashes]
 import ".." / lib / [nifstreams, nifcursors, bitabs, lineinfos, nifreader, nifbuilder, tooldirs, nifindexes]
 import ".." / nimony / [nimony_model, decls, symtabs, programs, semos, semdata, nifconfig, indexgen]
 include sem
@@ -50,6 +50,21 @@ proc semcheckToplevel(c: var SemContext; n0: Cursor): TokenBuf =
 
 
 type
+  NodeKind = enum
+    nkSymbol
+    nkLayout
+
+  Node = object
+    s: SymId
+    kind: NodeKind
+
+proc hash(x: Node): Hash =
+  var h: Hash = 0
+  h = h !& hash(x.s)
+  h = h !& hash(x.kind)
+  !$h
+
+type
   Conditions = object
     evaluated: seq[bool] # is condition already evaluated, index
     evalResults: seq[NimonyExpr]
@@ -88,13 +103,32 @@ proc cursorToCondition(c: sink Conditions, n: Cursor): Condition =
 
 type
   CyclicContext = object
-    resolveGraph: Table[SymId, seq[SymId]]
+    resolveGraph: Table[Node, seq[Node]]
     semContexts: Table[string, SemContext]
-    depsStack: seq[SymId] # used to spread decls to inner contexts
+    depsStack: seq[Node] # used to spread decls to inner contexts
 
     conditions: Conditions
     usedConditions: Table[SymId, seq[Condition]] # what conditions uses symbol
-    conditionsStack: seq[Condition] # used to spread conditions to inner contexts 
+    conditionsStack: seq[Condition] # used to spread conditions to inner contexts
+
+proc layoutNode(sym: SymId): Node {.inline.} =
+  Node(s: sym, kind: nkLayout)
+
+proc symbolNode(sym: SymId): Node {.inline.} =
+  Node(s: sym, kind: nkSymbol)
+
+proc ensureNode(c: var CyclicContext; node: Node) =
+  discard c.resolveGraph.hasKeyOrPut(node, @[])
+
+proc addEdge(c: var CyclicContext; fromNode, toNode: Node) =
+  var dest {.cursor.} = c.resolveGraph.mgetOrPut(fromNode, @[])
+  if toNode notin dest:
+    c.resolveGraph[fromNode].add toNode
+
+proc addLayoutToSymbolEdge(c: var CyclicContext; sym: SymId) =
+  c.ensureNode(layoutNode(sym))
+  c.ensureNode(symbolNode(sym))
+  c.addEdge(layoutNode(sym), symbolNode(sym))
 
 proc resolveSym(c: var CyclicContext, sym: SymId, syms: var seq[SymId]) =
   let suffix = extractModule(pool.syms[sym])
@@ -132,11 +166,32 @@ proc scanExprSyms(c: var CyclicContext, n: var Cursor, s: ptr SemContext, syms: 
   
   inc n
 
-proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromSym: SymId) =
+proc dependencyKind(n: Cursor): NodeKind =
+  case n.typeKind
+  of RefT, PtrT, PointerT, CstringT:
+    nkSymbol
+  else:
+    nkLayout
+
+proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromNode: Node) =
+  let depKind = dependencyKind(n)
   var syms: seq[SymId] = @[]
   scanExprSyms c, n, s, syms
   for sym in syms:
-    c.resolveGraph.mgetOrPut(fromSym, @[]).add sym
+    let load = tryLoadSym(sym)
+    if load.status != LacksNothing:
+      continue
+
+    let symDecl = load.decl
+    let k = symKind(symDecl)
+
+    var target = layoutNode(sym)
+    if k == TypeY and depKind == nkSymbol:
+      c.addLayoutToSymbolEdge(sym)
+      target = symbolNode(sym)
+    else:
+      c.ensureNode(target)
+    c.addEdge(fromNode, target)
 
 proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
   case n.stmtKind
@@ -152,20 +207,23 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     skip n # skip basetype
 
     if decl.name.kind == SymbolDef:
-      for sym in c.depsStack:
-        c.resolveGraph.mgetOrPut(decl.name.symId, @[]).add sym
-      
+      let owner = layoutNode(decl.name.symId)
+      c.ensureNode(owner)
+      for dep in c.depsStack:
+        c.ensureNode(dep)
+        c.addEdge(owner, dep)
+
       c.usedConditions.mgetOrPut(decl.name.symId, @[]).add c.conditionsStack
 
       var iter = initObjFieldIter()
-      
+
       while nextField(iter, n, keepCase = false):
         # For case object we need to check all branches since
         # otherwise max(sizeof(branch1), sizeof(branch2)) can't be computed and
         # type cannot be built, so this checking correct
         var field = takeLocal(n, SkipFinalParRi)
         var s = addr c.semContexts[suffix]
-        graphExpr c, field.typ, s, decl.name.symId
+        graphExpr c, field.typ, s, owner
 
     inc n
     inc n
@@ -198,7 +256,8 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         var syms: seq[SymId] = @[]
         c.conditionsStack.add store(c.conditions, n) # store condition
         scanExprSyms c, n, s, syms # cond
-        c.depsStack.add syms
+        for sym in syms:
+          c.depsStack.add layoutNode(sym)
         genGraph(c, n, suffix)
         inc n # ParRi
         c.conditionsStack[^1].makeNegative # need for correct else
@@ -285,24 +344,24 @@ proc prepareImports(c: var NifModule, n: var Cursor) =
 
     skip n
 
-proc topologicalSort(c: var CyclicContext): seq[SymId] =
+proc topologicalSort(c: var CyclicContext): seq[Node] =
   # uses Kahn's algorithm for topological sorting
 
-  var indegrees = initTable[SymId, int]() # number of incoming nodes
-  var queue = initDeque[SymId]()
-  
-  for (toSym, fromSyms) in c.resolveGraph.pairs:
-    indegrees[toSym] = 0 # indegrees should be defined for all syms to sort
-    for fromSym in fromSyms:
-      indegrees[fromSym] = 0
-  
-  for (toSym, fromSyms) in c.resolveGraph.pairs:
-    for fromSym in fromSyms:
-      inc indegrees[fromSym]
-  
-  for (sym, indegree) in indegrees.pairs:
+  var indegrees = initTable[Node, int]() # number of incoming nodes
+  var queue = initDeque[Node]()
+
+  for (owner, deps) in c.resolveGraph.pairs:
+    indegrees[owner] = 0 # indegrees should be defined for all nodes to sort
+    for dep in deps:
+      indegrees[dep] = 0
+
+  for (owner, deps) in c.resolveGraph.pairs:
+    for dep in deps:
+      inc indegrees[dep]
+
+  for (node, indegree) in indegrees.pairs:
     if indegree == 0:
-      queue.addLast sym
+      queue.addLast node
 
   result = @[]
   while queue.len > 0:
@@ -313,7 +372,7 @@ proc topologicalSort(c: var CyclicContext): seq[SymId] =
       dec indegrees[neighboor]
       if indegrees[neighboor] == 0:
         queue.addLast neighboor
-  
+
   if len(result) != len(indegrees):
     error "cyclic type dependence detected"
 
@@ -583,11 +642,12 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
     c.genGraph n, suffix
   
   when false:
-    for i, v in c.resolveGraph:
-      echo pool.syms[i]
-      echo ": "
-      for j in v:
-        echo pool.syms[j]
+    for node, deps in c.resolveGraph:
+      let nodeKind = if node.kind == nkSymbol: "symbol" else: "layout"
+      echo pool.syms[node.s], " (", nodeKind, ")"
+      for dep in deps:
+        let depKind = if dep.kind == nkSymbol: "symbol" else: "layout"
+        echo "  -> ", pool.syms[dep.s], " (", depKind, ")"
       echo ""
     
     echo "conds: "
@@ -609,13 +669,18 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
   # and it not a big problem because of no forward declaration for types etc.
   # But it need for when feature. Also it guarantee that
   # type fully semchecked and nothing bad will happen.
-  var topo = c.topologicalSort()
-  topo.reverse()
-  
+  var nodeOrder = c.topologicalSort()
+  nodeOrder.reverse()
+
   when false:
-    for i in topo:
-      echo pool.syms[i], ", "
-  
+    for node in nodeOrder:
+      echo pool.syms[node.s], " (", (if node.kind == nkSymbol: "symbol" else: "layout"), ")"
+
+  var topo: seq[SymId] = @[]
+  for node in nodeOrder:
+    if node.kind == nkLayout:
+      topo.add node.s
+
   semcheckSignatures c, topo, trees
   
   var i = 0
