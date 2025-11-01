@@ -144,6 +144,12 @@ proc resolveIdent(c: var CyclicContext, n: sink Cursor, s: ptr SemContext, syms:
   if count == 1:
     let sym = s[].dest[insertPos+1].symId
     resolveSym c, sym, syms
+  
+  if s[].currentScope.kind == ToplevelScope and s[].currentScope.up == nil:
+    for branchScope in s[].whenBranchScopes.values:
+      for sym in branchScope.tab.getOrDefault(n.litId):
+        resolveSym c, sym.name, syms
+
   s[].dest.shrink insertPos
 
 proc scanExprSyms(c: var CyclicContext, n: var Cursor, s: ptr SemContext, syms: var seq[SymId]) =
@@ -252,7 +258,12 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
       case n.substructureKind
       of ElifU:
         inc n # (elif
-        skip n # (id )
+        inc n # (id
+        let branchId = pool.integers[n.intId]
+        inc n
+        inc n # )
+        s[].currentScope = s[].whenBranchScopes[branchId]
+
         var syms: seq[SymId] = @[]
         c.conditionsStack.add store(c.conditions, n) # store condition
         scanExprSyms c, n, s, syms # cond
@@ -261,11 +272,17 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         genGraph(c, n, suffix)
         inc n # ParRi
         c.conditionsStack[^1].makeNegative # need for correct else
+        s[].currentScope = s[].currentScope.up
       of ElseU:
         inc n # (else
-        skip n # (id )
+        inc n # (id
+        let branchId = pool.integers[n.intId]
+        inc n
+        inc n # )
+        s[].currentScope = s[].whenBranchScopes[branchId]
         genGraph(c, n, suffix)
         inc n # ParRi
+        s[].currentScope = s[].currentScope.up
       else:
         echo n
         quit "Invalid ast"
@@ -383,7 +400,7 @@ proc evalCond(c: var CyclicContext, s: ptr SemContext, cond: Condition): NimonyE
     swap s[].phase, phase
     var n = c.conditions.nodes[cond.id]
     semConstBoolExpr s[], n, allowUnresolved = false # perfomed only on toplevel
-    swap s[].phase, phase    
+    swap s[].phase, phase
     result = cursorAt(s[].dest, condStart).exprKind
     c.conditions.addEvalResult(cond, result)
     endRead(s[].dest)
