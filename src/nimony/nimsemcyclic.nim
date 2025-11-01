@@ -70,7 +70,7 @@ type
     evalResults: seq[NimonyExpr]
     nodes: seq[Cursor]
     cursorUids: Table[int, Condition] # node (condition) position to it's Condition
-  
+
   Condition = object # Same condition can be used for different decls
     id: int          # and shouldn't be evaluated twice
     isNegative: bool
@@ -110,6 +110,10 @@ type
     conditions: Conditions
     usedConditions: Table[SymId, seq[Condition]] # what conditions uses symbol
     conditionsStack: seq[Condition] # used to spread conditions to inner contexts
+    
+    branchesStack: seq[int]
+    symBranches: Table[SymId, seq[int]] # when branch (id) associated with symbol
+    mergedBranches: Table[string, HashSet[int]]
 
 proc layoutNode(sym: SymId): Node {.inline.} =
   Node(s: sym, kind: nkLayout)
@@ -220,6 +224,8 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         c.addEdge(owner, dep)
 
       c.usedConditions.mgetOrPut(decl.name.symId, @[]).add c.conditionsStack
+      if c.branchesStack.len > 0:
+        c.symBranches[decl.name.symId] = c.branchesStack
 
       var iter = initObjFieldIter()
 
@@ -263,6 +269,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         inc n
         inc n # )
         s[].currentScope = s[].whenBranchScopes[branchId]
+        c.branchesStack.add branchId
 
         var syms: seq[SymId] = @[]
         c.conditionsStack.add store(c.conditions, n) # store condition
@@ -273,6 +280,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         inc n # ParRi
         c.conditionsStack[^1].makeNegative # need for correct else
         s[].currentScope = s[].currentScope.up
+        discard c.branchesStack.pop()
       of ElseU:
         inc n # (else
         inc n # (id
@@ -280,9 +288,11 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         inc n
         inc n # )
         s[].currentScope = s[].whenBranchScopes[branchId]
+        c.branchesStack.add branchId
         genGraph(c, n, suffix)
         inc n # ParRi
         s[].currentScope = s[].currentScope.up
+        discard c.branchesStack.pop()
       else:
         echo n
         quit "Invalid ast"
@@ -408,14 +418,17 @@ proc evalCond(c: var CyclicContext, s: ptr SemContext, cond: Condition): NimonyE
   else:
     result = c.conditions.evalResults[cond.id]
 
-proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext, topo: sink seq[SymId]) =
+proc applyOrdinalSemcheck(
+  c: var CyclicContext, n: var Cursor,
+  s: ptr SemContext, topo: sink seq[SymId],
+  mergedBranches: var HashSet[int]) =
   # try check that n not already semchecked after semchecking
   # topologicaly sorted decls
   case n.stmtKind
   of StmtsS:
     inc n
     while n.kind != ParRi:
-      applyOrdinalSemcheck(c, n, s, topo)
+      applyOrdinalSemcheck(c, n, s, topo, mergedBranches)
     inc n # ParRi
   of WhenS:
     # (top level) when implementation friendly to cached conditions
@@ -437,8 +450,9 @@ proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext
           skip n # cond
           let condValue = evalCond(c, s, cond)
           if condValue == TrueX:
-            s[].currentScope.mergeScope(s[].whenBranchScopes[branchId])
-            applyOrdinalSemcheck(c, n, s, topo) # body
+            if branchId notin mergedBranches:
+              s[].currentScope.mergeScope(s[].whenBranchScopes[branchId])
+            applyOrdinalSemcheck(c, n, s, topo, mergedBranches) # body
             inc n # ParRi
             skipUntilEnd n
             break
@@ -458,9 +472,9 @@ proc applyOrdinalSemcheck(c: var CyclicContext, n: var Cursor, s: ptr SemContext
         let branchId = pool.integers[n.intId]
         inc n
         inc n # )
-        s[].currentScope.mergeScope(s[].whenBranchScopes[branchId])
-
-        applyOrdinalSemcheck(c, n, s, topo) # body
+        if branchId notin mergedBranches:
+          s[].currentScope.mergeScope(s[].whenBranchScopes[branchId])
+        applyOrdinalSemcheck(c, n, s, topo, mergedBranches) # body
         inc n # ParRi
       else:
         echo n
@@ -504,15 +518,21 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     let suffix = extractModule(pool.syms[sym])
     var s = addr c.semContexts[suffix]
     
-    var canGenerate = true # can become false if some of conditions is false
+    var canGenerate = true # can become false if some of conditions is false    
     for cond in c.usedConditions.getOrDefault(sym, @[]):
       let condValue = evalCond(c, s, cond)
-      
+
       canGenerate = canGenerate and (
         condValue == FalseX and cond.isNegative or
         condValue == TrueX and not cond.isNegative)
 
+    discard c.mergedBranches.hasKeyOrPut(suffix, initHashSet[int]())
     if canGenerate:
+      if sym in c.symBranches:
+        for branchId in c.symBranches[sym]:
+          if branchId in c.mergedBranches[suffix]: continue
+          s[].currentScope.mergeScope(s[].whenBranchScopes[branchId])
+          c.mergedBranches[suffix].incl branchId
       semStmt s[], load.decl, false
     s[].pragmaStack.setLen(0) # {.pop.} fixed?
 
@@ -522,7 +542,7 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     var n = beginRead(trees[suffix])
     inc n
     while n.kind != ParRi:
-      applyOrdinalSemcheck(c, n, s, topo)
+      applyOrdinalSemcheck(c, n, s, topo, c.mergedBranches[suffix])
   
   for suffix in c.semContexts.keys:
     var s = addr c.semContexts[suffix]
