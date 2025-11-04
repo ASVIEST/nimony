@@ -410,6 +410,12 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     inc n # ParRi
     c.depsStack.shrink(depsPos)
     c.conditionsStack.shrink(condsPos)
+  elif n.symKind.isLocal:
+    var decl = asLocal(n)
+    if decl.name.kind == SymbolDef:
+      var s = addr c.semContexts[suffix]
+      graphExpr c, decl.val, s, layoutNode(decl.name.symId)
+    skip n
   else:
     skip n
 
