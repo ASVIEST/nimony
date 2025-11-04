@@ -659,6 +659,7 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
   for suffix in c.semContexts.keys:
     # ordinal SemcheckSignatures for not semchecked things
     var s = addr c.semContexts[suffix]
+    discard c.mergedBranches.hasKeyOrPut(suffix, initHashSet[int]())
     var n = beginRead(trees[suffix])
     inc n
     while n.kind != ParRi:
