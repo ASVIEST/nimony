@@ -101,6 +101,35 @@ proc hasCondition(c: sink Conditions, n: Cursor): bool =
 proc cursorToCondition(c: sink Conditions, n: Cursor): Condition =
   c.cursorUids[toUniqueId n]
 
+type Euler[T] = object
+  graph: Table[T, seq[T]]
+  order: seq[T]
+  subtreeStart, subtreeEnd: Table[T, int]
+
+proc addEdge[T](e: var Euler[T], u, v: T) =
+  e.g.mgetOrPut(u, @[]).add v
+  if v notin e.g: e.g[v] = @[]
+
+proc euler[T](e: var Euler[T], root: T) =
+  var st: seq[tuple[u: T, i: int]] = @[(root, 0)]
+  while st.len > 0:
+    let (u, i) = st[^1]
+    if i == 0:
+      e.subtreeStart[u] = e.order.len
+      e.order.add u
+    let ch = e.graph.getOrDefault(u, @[])
+    if i < ch.len:
+      st[^1].i = i + 1
+      st.add (ch[i], 0)
+    else:
+      e.subtreeEnd[u] = e.order.len - 1
+      discard st.pop()
+
+proc visible[T](e: Euler[T], u: T): seq[T] =
+  # If we’re talking about scopes, it should be the first node in the scope that begins the subtree.
+  if e.graph.getOrDefault(u, @[]).len == 0: @[]
+  else: e.order[e.subtreeStart[u] .. e.subtreeEnd[u]]
+
 type
   CyclicContext = object
     resolveGraph: Table[Node, seq[Node]]
@@ -114,6 +143,8 @@ type
     branchesStack: seq[int]
     symBranches: Table[SymId, seq[int]] # when branch (id) associated with symbol
     mergedBranches: Table[string, HashSet[int]]
+    whenBranchEuler: Euler[int]
+    whenBranchSubtreeStart: Table[int, int] # when branch to first when branch in this scope
 
 proc layoutNode(sym: SymId): Node {.inline.} =
   Node(s: sym, kind: nkLayout)
