@@ -590,7 +590,7 @@ proc semConstStrExpr(c: var SemContext; n: var Cursor) =
 
 proc semConstStrExprIgnoreTopLevel(c: var SemContext; n: var Cursor) =
   case c.phase
-  of SemcheckTopLevelSyms:
+  of SemcheckTopLevelSyms, SemcheckImports:
     # XXX `const`s etc are not evaluated yet
     c.takeTree n
   of SemcheckSignatures, SemcheckBodies:
