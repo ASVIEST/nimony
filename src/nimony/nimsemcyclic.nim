@@ -70,6 +70,7 @@ type
     evalResults: seq[NimonyExpr]
     nodes: seq[Cursor]
     cursorUids: Table[int, Condition] # node (condition) position to it's Condition
+    branchIds: seq[int]
 
   Condition = object # Same condition can be used for different decls
     id: int          # and shouldn't be evaluated twice
@@ -81,12 +82,13 @@ proc `$`(c: Condition): string =
     result.add "!"
   result.add $c.id
 
-proc store(c: var Conditions, n: Cursor): Condition =
+proc store(c: var Conditions, n: Cursor, branchId: int): Condition =
   result = Condition(id: c.evaluated.len, isNegative: false)
   c.evaluated.add false
   c.evalResults.add FalseX
   c.nodes.add n
   c.cursorUids[toUniqueId n] = result
+  c.branchIds.add branchId
 
 proc addEvalResult(c: var Conditions, cond: Condition, res: NimonyExpr) =
   c.evaluated[cond.id] = true
@@ -100,6 +102,9 @@ proc hasCondition(c: sink Conditions, n: Cursor): bool =
 
 proc cursorToCondition(c: sink Conditions, n: Cursor): Condition =
   c.cursorUids[toUniqueId n]
+
+proc branchId(c: sink Conditions, cond: Condition): int {.inline.} =
+  c.branchIds[cond.id]
 
 type Euler[T] = object
   graph: Table[T, seq[T]]
@@ -378,7 +383,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         c.branchesStack.add branchId
 
         var syms: seq[SymId] = @[]
-        c.conditionsStack.add store(c.conditions, n) # store condition
+        c.conditionsStack.add store(c.conditions, n, branchId) # store condition
         scanExprSyms c, n, s, syms # cond
         for sym in syms:
           c.depsStack.add layoutNode(sym)
@@ -510,6 +515,8 @@ proc topologicalSort(c: var CyclicContext): seq[Node] =
     error "cyclic type dependence detected"
 
 proc evalCond(c: var CyclicContext, s: ptr SemContext, cond: Condition): NimonyExpr =
+  let oldScope = s[].currentScope
+  s[].currentScope = s[].whenBranchScopes[c.conditions.branchId cond]
   if not c.conditions.evaluated[cond.id]:
     let condStart = s[].dest.len
     var phase = SemcheckBodies
@@ -523,6 +530,7 @@ proc evalCond(c: var CyclicContext, s: ptr SemContext, cond: Condition): NimonyE
     s[].dest.shrink(condStart)
   else:
     result = c.conditions.evalResults[cond.id]
+  s[].currentScope = oldScope
 
 proc applyOrdinalSemcheck(
   c: var CyclicContext, n: var Cursor,
