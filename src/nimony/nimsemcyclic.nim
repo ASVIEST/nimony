@@ -107,8 +107,8 @@ type Euler[T] = object
   subtreeStart, subtreeEnd: Table[T, int]
 
 proc addEdge[T](e: var Euler[T], u, v: T) =
-  e.g.mgetOrPut(u, @[]).add v
-  if v notin e.g: e.g[v] = @[]
+  e.graph.mgetOrPut(u, @[]).add v
+  if v notin e.graph: e.graph[v] = @[]
 
 proc euler[T](e: var Euler[T], root: T) =
   var st: seq[tuple[u: T, i: int]] = @[(root, 0)]
@@ -127,7 +127,7 @@ proc euler[T](e: var Euler[T], root: T) =
 
 proc visible[T](e: Euler[T], u: T): seq[T] =
   # If we’re talking about scopes, it should be the first node in the scope that begins the subtree.
-  if e.graph.getOrDefault(u, @[]).len == 0: @[]
+  if e.graph.getOrDefault(u, @[]).len == 0: @[u]
   else: e.order[e.subtreeStart[u] .. e.subtreeEnd[u]]
 
 type
@@ -165,6 +165,9 @@ proc addLayoutToSymbolEdge(c: var CyclicContext; sym: SymId) =
   c.ensureNode(symbolNode(sym))
   c.addEdge(layoutNode(sym), symbolNode(sym))
 
+proc ensureBranchNode(c: var CyclicContext; branchId: int) =
+  discard c.whenBranchEuler.graph.hasKeyOrPut(branchId, @[])
+
 proc resolveSym(c: var CyclicContext, sym: SymId, syms: var seq[SymId]) =
   let suffix = extractModule(pool.syms[sym])
   if suffix in c.semContexts: # check that symbol from this SCC
@@ -181,9 +184,18 @@ proc resolveIdent(c: var CyclicContext, n: sink Cursor, s: ptr SemContext, syms:
     resolveSym c, sym, syms
   
   if s[].currentScope.kind == ToplevelScope and s[].currentScope.up == nil:
+    # It need because we don't have whenBranchSubtreeStart for
+    # toplevel scope
     for branchScope in s[].whenBranchScopes.values:
       for sym in branchScope.tab.getOrDefault(n.litId):
         resolveSym c, sym.name, syms
+  
+  elif c.branchesStack.len > 0 and c.branchesStack[^1] in c.whenBranchSubtreeStart:
+    for branchId in c.whenBranchEuler.visible(c.whenBranchSubtreeStart[c.branchesStack[^1]]):
+      if branchId in s[].whenBranchScopes:
+        let scope = s[].whenBranchScopes[branchId]
+        for sym in scope.tab.getOrDefault(n.litId):
+          resolveSym c, sym.name, syms
 
   s[].dest.shrink insertPos
 
@@ -206,6 +218,69 @@ proc scanExprSyms(c: var CyclicContext, n: var Cursor, s: ptr SemContext, syms: 
     resolveIdent c, n, s, syms
   
   inc n
+
+proc genWhenBranchGraph(c: var CyclicContext, n: var Cursor, branchStack: var seq[int]) =
+  case n.stmtKind
+  of StmtsS:
+    inc n
+    while n.kind != ParRi:
+      genWhenBranchGraph(c, n, branchStack)
+    inc n # ParRi
+  of WhenS:
+    inc n
+    skip n # (id )
+    while n.kind != ParRi:
+      case n.substructureKind
+      of ElifU:
+        inc n # (elif
+        inc n # (id
+        let branchId = pool.integers[n.intId]
+        inc n
+        inc n # )
+        c.ensureBranchNode(branchId)
+        if branchStack.len > 0:
+          let parent = branchStack[^1]
+          c.ensureBranchNode(parent)
+          if parent notin c.whenBranchSubtreeStart:
+            # start of subtree
+            c.whenBranchSubtreeStart[parent] = branchId
+            c.whenBranchEuler.addEdge(parent, branchId)
+          else:
+            let root = c.whenBranchSubtreeStart[parent]
+            if branchId != root:
+              c.whenBranchEuler.addEdge(root, branchId)
+        branchStack.add branchId
+        skip n # cond
+        genWhenBranchGraph(c, n, branchStack)
+        branchStack.shrink(branchStack.len - 1)
+        inc n # ParRi
+      of ElseU:
+        inc n # (else
+        inc n # (id
+        let branchId = pool.integers[n.intId]
+        inc n
+        inc n # )
+        c.ensureBranchNode(branchId)
+        if branchStack.len > 0:
+          let parent = branchStack[^1]
+          c.ensureBranchNode(parent)
+          if parent notin c.whenBranchSubtreeStart:
+            c.whenBranchSubtreeStart[parent] = branchId
+            c.whenBranchEuler.addEdge(parent, branchId)
+          else:
+            let root = c.whenBranchSubtreeStart[parent]
+            if branchId != root:
+              c.whenBranchEuler.addEdge(root, branchId)
+        branchStack.add branchId
+        genWhenBranchGraph(c, n, branchStack)
+        branchStack.shrink(branchStack.len - 1)
+        inc n # ParRi
+      else:
+        echo n
+        quit "Invalid ast"
+    inc n # ParRi
+  else:
+    skip n
 
 proc dependencyKind(n: Cursor): NodeKind =
   case n.typeKind
@@ -703,6 +778,18 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
 
   # Now we have importTab. It means that we can use anything with imported symbols.
   # For example, buildSymChoice should work with imported Symbols
+
+  for fileName in fileNames:
+    let suffix = splitModulePath(fileName).name
+    var n = beginRead(trees[suffix])
+    var branchStack: seq[int] = @[]
+    c.genWhenBranchGraph(n, branchStack)
+
+  var visitedRoots = initHashSet[int]()
+  for root in c.whenBranchSubtreeStart.values:
+    if root notin visitedRoots:
+      visitedRoots.incl root
+      c.whenBranchEuler.euler(root)
 
   for fileName in fileNames:
     let suffix = splitModulePath(fileName).name
