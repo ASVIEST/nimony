@@ -28,7 +28,10 @@ proc initSemContext(fileName: string): SemContext =
     # commandLineArgs: commandLineArgs,
     canSelfExec: false, #TODO: check this one
     pending: createTokenBuf(),
-    inCyclicGroup: true)
+    inCyclicGroup: true,
+    executeCall: exprexec.executeCall,
+    semStmtCallback: semStmtCallback,
+    semGetSize: semGetSize)
 
   for magic in ["typeof", "compiles", "defined", "declared"]:
     result.unoverloadableMagics.incl(pool.strings.getOrIncl(magic))
