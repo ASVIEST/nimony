@@ -4910,7 +4910,8 @@ proc semExpr(c: var SemContext; it: var Item; flags: set[SemFlag] = {}) =
         toplevelGuard c:
           semCall c, it, flags
       of IncludeS:
-        semInclude c, it
+        importGuard c:
+          semInclude c, it
       of ImportS:
         importGuard c:
           semImport c, it
