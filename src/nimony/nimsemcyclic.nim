@@ -56,6 +56,7 @@ type
   NodeKind = enum
     nkSymbol
     nkLayout
+    nkVirtual
 
   Node = object
     s: SymId
@@ -159,6 +160,9 @@ proc layoutNode(sym: SymId): Node {.inline.} =
 
 proc symbolNode(sym: SymId): Node {.inline.} =
   Node(s: sym, kind: nkSymbol)
+
+proc virtualNode(sym: SymId): Node {.inline.} =
+  Node(s: sym, kind: nkVirtual)
 
 proc ensureNode(c: var CyclicContext; node: Node) =
   discard c.resolveGraph.hasKeyOrPut(node, @[])
@@ -313,9 +317,59 @@ proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromNode:
     if k == TypeY and depKind == nkSymbol:
       c.addLayoutToSymbolEdge(sym)
       target = symbolNode(sym)
+    elif k in RoutineKinds:
+      target = virtualNode(sym)
     else:
+      echo k
       c.ensureNode(target)
     c.addEdge(fromNode, target)
+
+# Just a copy of exprexec logic, adapted to scanning used syms
+# for better graph generation
+
+proc collectSyms(n: Cursor; stack: var seq[SymId]) =
+  
+  assert n.kind != ParRi, "cursor at end?"
+  if n.kind != ParLe:
+    # atom:
+    if n.kind == Symbol: stack.add n.symId
+  else:
+    var n = n
+    var nested = 0
+    while true:
+      case n.kind
+      of ParRi:
+        dec nested
+        if nested == 0: break
+      of ParLe: inc nested
+      of Symbol: stack.add n.symId
+      else: discard
+      inc n
+
+proc collectUsedSyms(s: var SemContext; routineName: SymId): HashSet[SymId] =
+  var stack = newSeq[SymId]()
+  var handledSyms = initHashSet[SymId]()
+  stack.add routineName
+  # Always add `system.nim` as a dependency:
+  var dest = createTokenBuf(150)
+
+  while stack.len > 0:
+    let sym = stack.pop()
+    if not handledSyms.containsOrIncl(sym):
+      let owner = extractModule(pool.syms[sym])
+      if owner == s.thisModuleSuffix:
+        # add sym's declaration to `dest`:
+        let res = tryLoadSym(sym)
+        if res.status == LacksNothing:
+          let before = dest.len
+          # we need to copy res.decl here as it aliases prog.mem which the semchecker will overwrite nilly-willy!
+          var newDecl = createTokenBuf(50)
+          newDecl.addSubtree res.decl
+          s.semStmtCallback(s, dest, cursorAt(newDecl, 0))
+          collectSyms(cursorAt(dest, before), stack)
+          endRead(dest)
+          #dest.addSubtreeAndSyms res.decl, stack
+  handledSyms
 
 proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
   case n.stmtKind
@@ -418,6 +472,24 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     if decl.name.kind == SymbolDef:
       var s = addr c.semContexts[suffix]
       graphExpr c, decl.val, s, layoutNode(decl.name.symId)
+    skip n
+  elif n.symKind.isRoutine:
+    var decl = asRoutine(n)
+    var s = addr c.semContexts[suffix]
+    
+    
+    for symId in collectUsedSyms(s[], decl.name.symId):
+      let load = tryLoadSym(symId)
+      if load.status != LacksNothing:
+        continue
+
+      let symDecl = load.decl
+      let k = symKind(symDecl)
+
+      if k == ResultY or symId == decl.name.symId: continue
+      let dep = layoutNode(symId)
+      c.ensureNode(dep)
+      c.addEdge(virtualNode(decl.name.symId), dep)
     skip n
   else:
     skip n
@@ -816,10 +888,18 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
   
   when false:
     for node, deps in c.resolveGraph:
-      let nodeKind = if node.kind == nkSymbol: "symbol" else: "layout"
+      let nodeKind =
+        case node.kind
+        of nkSymbol: "symbol"
+        of nkLayout: "layout"
+        of nkVirtual: "virtual"
       echo pool.syms[node.s], " (", nodeKind, ")"
       for dep in deps:
-        let depKind = if dep.kind == nkSymbol: "symbol" else: "layout"
+        let depKind =
+          case dep.kind
+          of nkSymbol: "symbol"
+          of nkLayout: "layout"
+          of nkVirtual: "virtual"
         echo "  -> ", pool.syms[dep.s], " (", depKind, ")"
       echo ""
     
@@ -847,7 +927,12 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
 
   when false:
     for node in nodeOrder:
-      echo pool.syms[node.s], " (", (if node.kind == nkSymbol: "symbol" else: "layout"), ")"
+      let nodeKind =
+        case node.kind
+        of nkSymbol: "symbol"
+        of nkLayout: "layout"
+        of nkVirtual: "virtual"
+      echo pool.syms[node.s], " (", nodeKind, ")"
 
   var topo: seq[SymId] = @[]
   for node in nodeOrder:
