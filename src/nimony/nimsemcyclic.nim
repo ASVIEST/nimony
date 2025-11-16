@@ -310,66 +310,31 @@ proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromNode:
     if load.status != LacksNothing:
       continue
 
-    let symDecl = load.decl
-    let k = symKind(symDecl)
-
     var target = layoutNode(sym)
-    if k == TypeY and depKind == nkSymbol:
+    if symKind(load.decl) == TypeY and depKind == nkSymbol:
       c.addLayoutToSymbolEdge(sym)
       target = symbolNode(sym)
-    elif k in RoutineKinds:
-      target = virtualNode(sym)
     else:
-      echo k
       c.ensureNode(target)
     c.addEdge(fromNode, target)
 
-# Just a copy of exprexec logic, adapted to scanning used syms
-# for better graph generation
-
-proc collectSyms(n: Cursor; stack: var seq[SymId]) =
-  
-  assert n.kind != ParRi, "cursor at end?"
-  if n.kind != ParLe:
-    # atom:
-    if n.kind == Symbol: stack.add n.symId
-  else:
-    var n = n
-    var nested = 0
-    while true:
-      case n.kind
-      of ParRi:
-        dec nested
-        if nested == 0: break
-      of ParLe: inc nested
-      of Symbol: stack.add n.symId
-      else: discard
-      inc n
-
-proc collectUsedSyms(s: var SemContext; routineName: SymId): HashSet[SymId] =
-  var stack = newSeq[SymId]()
-  var handledSyms = initHashSet[SymId]()
-  stack.add routineName
-  # Always add `system.nim` as a dependency:
-  var dest = createTokenBuf(150)
-
+proc collectRoutineDeps(c: var CyclicContext; root: Cursor; s: ptr SemContext; outSyms: var seq[SymId]) =
+  var stack = @[root]
   while stack.len > 0:
-    let sym = stack.pop()
-    if not handledSyms.containsOrIncl(sym):
-      let owner = extractModule(pool.syms[sym])
-      if owner == s.thisModuleSuffix:
-        # add sym's declaration to `dest`:
-        let res = tryLoadSym(sym)
-        if res.status == LacksNothing:
-          let before = dest.len
-          # we need to copy res.decl here as it aliases prog.mem which the semchecker will overwrite nilly-willy!
-          var newDecl = createTokenBuf(50)
-          newDecl.addSubtree res.decl
-          s.semStmtCallback(s, dest, cursorAt(newDecl, 0))
-          collectSyms(cursorAt(dest, before), stack)
-          endRead(dest)
-          #dest.addSubtreeAndSyms res.decl, stack
-  handledSyms
+    var cur = stack.pop()
+    if cursorIsNil(cur):
+      continue
+    if cur.kind == ParLe:
+      var child = cur
+      inc child
+      while child.kind != ParRi:
+        stack.add child
+        skip child
+    elif cur.kind in {Symbol, SymbolDef}:
+      resolveSym(c, cur.symId, outSyms)
+    elif cur.kind == Ident:
+      var tmp = cur
+      resolveIdent(c, tmp, s, outSyms)
 
 proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
   case n.stmtKind
@@ -476,20 +441,22 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
   elif n.symKind.isRoutine:
     var decl = asRoutine(n)
     var s = addr c.semContexts[suffix]
-    
-    
-    for symId in collectUsedSyms(s[], decl.name.symId):
-      let load = tryLoadSym(symId)
+    let owner = layoutNode(decl.name.symId)
+    c.ensureNode(owner)
+    var deps: seq[SymId] = @[]
+    let declLoad = tryLoadSym(decl.name.symId)
+    if declLoad.status == LacksNothing:
+      collectRoutineDeps(c, declLoad.decl, s, deps)
+    for depSym in deps:
+      let load = tryLoadSym(depSym)
       if load.status != LacksNothing:
         continue
 
-      let symDecl = load.decl
-      let k = symKind(symDecl)
-
-      if k == ResultY or symId == decl.name.symId: continue
-      let dep = layoutNode(symId)
-      c.ensureNode(dep)
-      c.addEdge(virtualNode(decl.name.symId), dep)
+      if symKind(load.decl) == ResultY or depSym == decl.name.symId:
+        continue
+      let depNode = layoutNode(depSym)
+      c.ensureNode(depNode)
+      c.addEdge(owner, depNode)
     skip n
   else:
     skip n
