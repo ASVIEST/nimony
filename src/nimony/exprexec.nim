@@ -51,6 +51,7 @@ type
     requests: seq[GenProcRequest]
     usedModules: HashSet[string]
     errorMsg: string
+    inlinedModules: HashSet[string] # modules that can be rewritten to current module
 
 proc collectSyms(n: Cursor; stack: var seq[SymId]) =
   assert n.kind != ParRi, "cursor at end?"
@@ -70,6 +71,18 @@ proc collectSyms(n: Cursor; stack: var seq[SymId]) =
       else: discard
       inc n
 
+proc rewriteModuleSuffix(dest: var TokenBuf; start: int; fromSuffix, toSuffix: string) =
+  for i in start..<dest.len:
+    case dest[i].kind
+    of Symbol, SymbolDef:
+      let name = pool.syms[dest[i].symId]
+      if extractModule(name) == fromSuffix:
+        var base = splitSymName(name).name
+        if base.len > 0:
+          var newName = base & "." & toSuffix
+          dest[i].setSymId(pool.syms.getOrIncl(newName))
+    else: discard
+
 proc rewriteSyms*(c: var LiftingCtx) =
   for i in 0 ..< c.dest.len:
     if c.dest[i].kind in {Symbol, SymbolDef}:
@@ -88,18 +101,27 @@ proc collectUsedSyms(c: var LiftingCtx; s: var SemContext; routine: Routine) =
     let sym = stack.pop()
     if not handledSyms.containsOrIncl(sym):
       let owner = extractModule(pool.syms[sym])
-      if owner == c.thisModuleSuffix:
-        # add sym's declaration to `dest`:
+      # in cyclic group we need run semStmtCallback in
+      # right module
+      var ownerSem: ptr SemContext =
+        if owner == c.thisModuleSuffix: addr s
+        elif s.inCyclicGroup and s.tryGetModuleSem != nil:
+          s.tryGetModuleSem(owner)
+        else: nil
+
+      if ownerSem != nil:
+        if owner.len > 0 and owner != c.thisModuleSuffix:
+          c.inlinedModules.incl(owner)
+        # add sym's declaration to `dest` from the appropriate sem context:
         let res = tryLoadSym(sym)
         if res.status == LacksNothing:
           let before = c.dest.len
           # we need to copy res.decl here as it aliases prog.mem which the semchecker will overwrite nilly-willy!
           var newDecl = createTokenBuf(50)
           newDecl.addSubtree res.decl
-          s.semStmtCallback(s, c.dest, cursorAt(newDecl, 0))
+          ownerSem[].semStmtCallback(ownerSem[], c.dest, cursorAt(newDecl, 0))
           collectSyms(cursorAt(c.dest, before), stack)
           endRead(c.dest)
-          #dest.addSubtreeAndSyms res.decl, stack
       elif owner.len > 0:
         c.usedModules.incl(s.g.config.nifcachePath / owner)
 
@@ -531,6 +553,11 @@ proc executeCall*(s: var SemContext; routine: Routine; dest: var TokenBuf; call:
   # insertions so we do it after `injectDerefs`:
   genMissingProcs c
   c.dest.addParRi() # StmtsS
+
+  for owner in c.inlinedModules:
+    # rewrite module suffix to this module
+    # it allow correct symbol resolution in cyclic modules
+    rewriteModuleSuffix(c.dest, 0, owner, c.thisModuleSuffix)
 
   rewriteSyms c
 

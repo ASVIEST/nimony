@@ -76,7 +76,7 @@ type
   SemExecutor* = proc (c: var SemContext; routine: Routine; result: var TokenBuf; call: Cursor; info: PackedLineInfo): string {.nimcall.}
   SemStmtCallback* = proc (c: var SemContext; dest: var TokenBuf; n: Cursor) {.nimcall.}
   SemGetSize* = proc(c: var SemContext; n: Cursor; strict=false): xint {.nimcall.}
-
+  SemTryGetModuleSem* = proc (suffix: string): ptr SemContext {.nimcall.}
 
   SemContext* = object
     dest*: TokenBuf
@@ -129,6 +129,7 @@ type
     usingStmtMap*: Table[StrId, TypeCursor] # mapping of identifiers to types declared in using statements
     pragmaStack*: seq[Cursor] # used to implement {.push.} and {.pop.}
     executeCall*: SemExecutor
+    tryGetModuleSem*: SemTryGetModuleSem
     semStmtCallback*: SemStmtCallback
     semGetSize*: SemGetSize
     passL*: seq[string]

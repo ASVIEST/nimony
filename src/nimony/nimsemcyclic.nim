@@ -9,7 +9,6 @@ import ".." / lib / [nifstreams, nifcursors, bitabs, lineinfos, nifreader, nifbu
 import ".." / nimony / [nimony_model, decls, symtabs, programs, semos, semdata, nifconfig, indexgen]
 include sem
 
-
 proc initSemContext(fileName: string): SemContext =
   let outp = splitModulePath(fileName)
   var moduleFlags: set[ModuleFlag] = {}
@@ -781,7 +780,7 @@ proc checkCyclicPragma(c: sink CyclicContext, n: var Cursor, s: ptr SemContext) 
     skip n
 
 proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyclicPragma: bool) =
-  var c = CyclicContext()
+  var c {.global.} = CyclicContext()
   
   var trees = initTable[string, TokenBuf]()
   for fileName in fileNames:
@@ -791,6 +790,11 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
     let suffix = splitModulePath(fileName).name
     trees[suffix] = semcheckToplevel(sc, n0)
     c.semContexts[suffix] = sc
+    c.semContexts[suffix].tryGetModuleSem = # closures too slow in nim 2 so it uses nimcall
+      proc(suffix: string): ptr SemContext =
+        if suffix in c.semContexts:
+          addr c.semContexts[suffix]
+        else: nil
 
     if suffix notin prog.mods:
       prog.mods[suffix] = NifModule()
