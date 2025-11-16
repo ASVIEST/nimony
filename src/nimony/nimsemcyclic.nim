@@ -56,7 +56,6 @@ type
   NodeKind = enum
     nkSymbol
     nkLayout
-    nkVirtual
 
   Node = object
     s: SymId
@@ -160,9 +159,6 @@ proc layoutNode(sym: SymId): Node {.inline.} =
 
 proc symbolNode(sym: SymId): Node {.inline.} =
   Node(s: sym, kind: nkSymbol)
-
-proc virtualNode(sym: SymId): Node {.inline.} =
-  Node(s: sym, kind: nkVirtual)
 
 proc ensureNode(c: var CyclicContext; node: Node) =
   discard c.resolveGraph.hasKeyOrPut(node, @[])
@@ -855,18 +851,10 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
   
   when false:
     for node, deps in c.resolveGraph:
-      let nodeKind =
-        case node.kind
-        of nkSymbol: "symbol"
-        of nkLayout: "layout"
-        of nkVirtual: "virtual"
+      let nodeKind = if node.kind == nkSymbol: "symbol" else: "layout"
       echo pool.syms[node.s], " (", nodeKind, ")"
       for dep in deps:
-        let depKind =
-          case dep.kind
-          of nkSymbol: "symbol"
-          of nkLayout: "layout"
-          of nkVirtual: "virtual"
+        let depKind = if dep.kind == nkSymbol: "symbol" else: "layout"
         echo "  -> ", pool.syms[dep.s], " (", depKind, ")"
       echo ""
     
@@ -894,11 +882,7 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
 
   when false:
     for node in nodeOrder:
-      let nodeKind =
-        case node.kind
-        of nkSymbol: "symbol"
-        of nkLayout: "layout"
-        of nkVirtual: "virtual"
+      let nodeKind = if node.kind == nkSymbol: "symbol" else: "layout"
       echo pool.syms[node.s], " (", nodeKind, ")"
 
   var topo: seq[SymId] = @[]
