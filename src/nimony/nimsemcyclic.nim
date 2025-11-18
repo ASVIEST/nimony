@@ -331,6 +331,16 @@ proc collectRoutineDeps(c: var CyclicContext; root: Cursor; s: ptr SemContext; o
       var tmp = cur
       resolveIdent(c, tmp, s, outSyms)
 
+proc addBranchNodes(c: var CyclicContext, owner: Node)=
+  c.ensureNode(owner)
+  for dep in c.depsStack:
+    c.ensureNode(dep)
+    c.addEdge(owner, dep)
+      
+  c.usedConditions.mgetOrPut(owner.s, @[]).add c.conditionsStack
+  if c.branchesStack.len > 0:
+    c.symBranches[owner.s] = c.branchesStack
+
 proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
   case n.stmtKind
   of StmtsS:
@@ -346,14 +356,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
 
     if decl.name.kind == SymbolDef:
       let owner = layoutNode(decl.name.symId)
-      c.ensureNode(owner)
-      for dep in c.depsStack:
-        c.ensureNode(dep)
-        c.addEdge(owner, dep)
-
-      c.usedConditions.mgetOrPut(decl.name.symId, @[]).add c.conditionsStack
-      if c.branchesStack.len > 0:
-        c.symBranches[decl.name.symId] = c.branchesStack
+      c.addBranchNodes(owner)
 
       var iter = initObjFieldIter()
 
@@ -431,6 +434,9 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     var decl = asLocal(n)
     if decl.name.kind == SymbolDef:
       var s = addr c.semContexts[suffix]
+      let owner = layoutNode(decl.name.symId)
+      c.ensureNode(owner)
+      c.addBranchNodes(owner)
       graphExpr c, decl.val, s, layoutNode(decl.name.symId)
     skip n
   elif n.symKind.isRoutine:
@@ -438,6 +444,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     var s = addr c.semContexts[suffix]
     let owner = layoutNode(decl.name.symId)
     c.ensureNode(owner)
+    c.addBranchNodes(owner)
     var deps: seq[SymId] = @[]
     let declLoad = tryLoadSym(decl.name.symId)
     if declLoad.status == LacksNothing:
