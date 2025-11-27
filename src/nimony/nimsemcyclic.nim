@@ -55,6 +55,7 @@ type
   NodeKind = enum
     nkSymbol
     nkLayout
+    nkImport
 
   Node = object
     s: SymId
@@ -158,6 +159,10 @@ proc layoutNode(sym: SymId): Node {.inline.} =
 
 proc symbolNode(sym: SymId): Node {.inline.} =
   Node(s: sym, kind: nkSymbol)
+
+proc importNode(n: Cursor): Node {.inline.} =
+  # have chance to collide, but...
+  Node(s: pool.syms.getOrIncl("import." & $toUniqueId(n)), kind: nkImport)
 
 proc ensureNode(c: var CyclicContext; node: Node) =
   discard c.resolveGraph.hasKeyOrPut(node, @[])
@@ -344,10 +349,12 @@ proc addBranchNodes(c: var CyclicContext, owner: Node)=
 proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
   case n.stmtKind
   of StmtsS:
+    let depsPos = c.depsStack.len
     inc n
     while n.kind != ParRi:
       genGraph(c, n, suffix)
     inc n # ParRi
+    c.depsStack.shrink(depsPos)
   of TypeS:
     let decl = asTypeDecl(n)
     n = decl.body
@@ -430,6 +437,16 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     inc n # ParRi
     c.depsStack.shrink(depsPos)
     c.conditionsStack.shrink(condsPos)
+  of ImportS, FromImportS, ImportExceptS:
+    let owner = importNode(n)
+    c.addBranchNodes(owner)
+    # Will nimony imports be ordered?
+    # Not yet, but it's unclear what will happen in the future.
+    # In any case, to maintain order (in this case),
+    # you need to uncomment the following line.
+    
+    # c.depsStack.add owner
+    skip n
   elif n.symKind.isLocal:
     var decl = asLocal(n)
     if decl.name.kind == SymbolDef:
@@ -901,8 +918,9 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
     if node.kind == nkLayout:
       topo.add node.s
 
+  # TODO: make it support semcheckImports
   semcheckSignatures c, topo, trees
-  
+
   var i = 0
   for fileName in fileNames:
     let suffix = splitModulePath(fileName).name
