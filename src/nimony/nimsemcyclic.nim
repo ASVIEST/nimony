@@ -25,7 +25,7 @@ proc initSemContext(fileName: string): SemContext =
     phase: SemcheckTopLevelSyms,
     routine: SemRoutine(kind: NoSym),
     # commandLineArgs: commandLineArgs,
-    canSelfExec: false, #TODO: check this one
+    canSelfExec: true,
     pending: createTokenBuf(),
     inCyclicGroup: true,
     executeCall: exprexec.executeCall,
@@ -58,8 +58,9 @@ type
     nkImport
 
   Node = object
-    s: SymId
     kind: NodeKind
+    s: SymId
+    n: Cursor # optional payload
 
 proc hash(x: Node): Hash =
   var h: Hash = 0
@@ -160,9 +161,11 @@ proc layoutNode(sym: SymId): Node {.inline.} =
 proc symbolNode(sym: SymId): Node {.inline.} =
   Node(s: sym, kind: nkSymbol)
 
-proc importNode(n: Cursor): Node {.inline.} =
+proc importNode(n: Cursor, suffix: string): Node {.inline.} =
   # have chance to collide, but...
-  Node(s: pool.syms.getOrIncl("import." & $toUniqueId(n)), kind: nkImport)
+  Node(
+    s: pool.syms.getOrIncl("import." & $toUniqueId(n) & '.' & suffix),
+    n: n, kind: nkImport)
 
 proc ensureNode(c: var CyclicContext; node: Node) =
   discard c.resolveGraph.hasKeyOrPut(node, @[])
@@ -438,7 +441,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     c.depsStack.shrink(depsPos)
     c.conditionsStack.shrink(condsPos)
   of ImportS, FromImportS, ImportExceptS:
-    let owner = importNode(n)
+    let owner = importNode(n, suffix)
     c.addBranchNodes(owner)
     # Will nimony imports be ordered?
     # Not yet, but it's unclear what will happen in the future.
@@ -601,7 +604,7 @@ proc evalCond(c: var CyclicContext, s: ptr SemContext, cond: Condition): NimonyE
 
 proc applyOrdinalSemcheck(
   c: var CyclicContext, n: var Cursor,
-  s: ptr SemContext, topo: sink seq[SymId],
+  s: ptr SemContext, topo: sink seq[Node],
   mergedBranches: var HashSet[int]) =
   # try check that n not already semchecked after semchecking
   # topologicaly sorted decls
@@ -664,26 +667,28 @@ proc applyOrdinalSemcheck(
     inc n # ParRi
   of TypeS:
     let decl = asTypeDecl(n)
-    if decl.name.kind == SymbolDef and decl.name.symId in topo:
+    if decl.name.kind == SymbolDef and layoutNode(decl.name.symId) in topo:
       skip n
     else:
       semStmt s[], n, false
+  of ImportS, FromImportS, ImportExceptS:
+    skip n # already processed
   elif n.symKind.isLocal:
     let decl = asLocal(n)
-    if decl.name.kind == SymbolDef and decl.name.symId in topo:
+    if decl.name.kind == SymbolDef and layoutNode(decl.name.symId) in topo:
       skip n
     else:
       semStmt s[], n, false
   elif n.symKind.isRoutine:
     let decl = asRoutine(n)
-    if decl.name.kind == SymbolDef and decl.name.symId in topo:
+    if decl.name.kind == SymbolDef and layoutNode(decl.name.symId) in topo:
       skip n
     else:
       semStmt s[], n, false
   else:
     semStmt s[], n, false
 
-proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table[string, TokenBuf]) =
+proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[string, TokenBuf]) =
   # SemcheckSignatures is unusual because it working in topologic order on some decls.
   # so it need to generate true dest:
   # (stmts
@@ -694,8 +699,9 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
     s.phase = SemcheckSignatures
     s.dest.addParLe TagId(StmtsS), NoLineInfo
 
-  for sym in topo:
-    var load = tryLoadSym(sym)
+  for node in topo:
+    let sym = node.s
+    
     let suffix = extractModule(pool.syms[sym])
     var s = addr c.semContexts[suffix]
     
@@ -714,7 +720,23 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[SymId], trees: var Table
           if branchId in c.mergedBranches[suffix]: continue
           s[].currentScope.mergeScope(s[].whenBranchScopes[branchId])
           c.mergedBranches[suffix].incl branchId
-      semStmt s[], load.decl, false
+      if node.kind == nkImport:
+        # basicly semExprMissingPhases but
+        # without Item and adapted for this case
+        var buf = createTokenBuf()
+        swap s[].dest, buf
+        var phase = SemcheckImports
+        swap s[].phase, phase
+        var n = node.n
+        semStmt s[], n, false
+        swap s[].phase, phase
+        swap s[].dest, buf
+        if buf.len > 0:
+          var n = beginRead(buf)
+          semStmt s[], n, false # exec SemcheckSignatures
+      else:
+        var load = tryLoadSym(sym)
+        semStmt s[], load.decl, false
     s[].pragmaStack.setLen(0) # {.pop.} fixed?
 
   for suffix in c.semContexts.keys:
@@ -913,12 +935,11 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
       let nodeKind = if node.kind == nkSymbol: "symbol" else: "layout"
       echo pool.syms[node.s], " (", nodeKind, ")"
 
-  var topo: seq[SymId] = @[]
+  var topo: seq[Node] = @[]
   for node in nodeOrder:
-    if node.kind == nkLayout:
-      topo.add node.s
+    if node.kind in {nkLayout, nkImport}:
+      topo.add node
 
-  # TODO: make it support semcheckImports
   semcheckSignatures c, topo, trees
 
   var i = 0
