@@ -25,7 +25,7 @@ proc initSemContext(fileName: string): SemContext =
     phase: SemcheckTopLevelSyms,
     routine: SemRoutine(kind: NoSym),
     # commandLineArgs: commandLineArgs,
-    canSelfExec: true,
+    canSelfExec: false,
     pending: createTokenBuf(),
     inCyclicGroup: true,
     executeCall: exprexec.executeCall,
@@ -724,6 +724,7 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[
         # basicly semExprMissingPhases but
         # without Item and adapted for this case
         var buf = createTokenBuf()
+        s[].canSelfExec = true
         swap s[].dest, buf
         var phase = SemcheckImports
         swap s[].phase, phase
@@ -731,6 +732,7 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[
         semStmt s[], n, false
         swap s[].phase, phase
         swap s[].dest, buf
+        s[].canSelfExec = false
         if buf.len > 0:
           var n = beginRead(buf)
           semStmt s[], n, false # exec SemcheckSignatures
