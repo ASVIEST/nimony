@@ -26,9 +26,7 @@ proc semProcBody(c: var SemContext; itB: var Item) =
   else:
     # transform `expr` to `result = expr`:
     if c.routine.resId != SymId(0):
-      shrink c.dest, beforeLastSon
-      var it = Item(n: beforeLastSonCursor, typ: c.routine.returnType)
-      semExpr c, it
+      commonType c, it, beforeLastSon, c.routine.returnType
 
       var prefix = [
         parLeToken(AsgnS, lastSonInfo),
@@ -988,9 +986,16 @@ proc semTypeSection(c: var SemContext; n: var Cursor) =
   if isEnumTypeDecl:
     var enumTypeDecl = tryLoadSym(delayed.s.name)
     assert enumTypeDecl.status == LacksNothing
-    swap c.dest, c.pending
+    var pending = createTokenBuf()
+    swap c.dest, pending
     genEnumToStrProc(c, enumTypeDecl.decl)
-    swap c.dest, c.pending
+    swap c.dest, pending
+
+    var dollorProcDecl = beginRead(pending)
+    var it = Item(n: dollorProcDecl, typ: c.types.autoType)
+    # semchecking is needed for publishing signature
+    # and transforming `ret ...` into `ret result` for `controlflow.nim`
+    semExpr(c, it)
 
   if isRefPtrObj:
     if c.phase > SemcheckImports:

@@ -91,6 +91,7 @@ type
     IsNodecl
     IsInheritable
     IsUnion
+    IsImportExternal
 
 proc trType(c: var EContext; n: var Cursor; flags: set[TypeFlag] = {})
 
@@ -123,6 +124,11 @@ proc trField(c: var EContext; n: var Cursor; flags: set[TypeFlag] = {}) =
   let prag = parsePragmas(c, n)
 
   c.dest.addDotToken() # adds pragmas
+
+  if IsImportExternal in flags and prag.externName.len == 0:
+    var baseName = pool.syms[s]
+    extractBasename baseName
+    prag.externName = baseName
 
   if prag.externName.len > 0:
     c.registerMangle(s, c.toExtern(s, prag.externName))
@@ -418,7 +424,9 @@ proc addRttiField(c: var EContext; info: PackedLineInfo) =
   c.dest.add symdefToken(pool.syms.getOrIncl(VTableField), info)
   c.dest.addEmpty() # pragmas
   c.dest.addParLe PtrT, info
-  c.dest.addSymUse pool.syms.getOrIncl("Rtti.0." & SystemModuleSuffix), info
+  let rttiSym = pool.syms.getOrIncl("Rtti.0." & SystemModuleSuffix)
+  c.dest.addSymUse rttiSym, info
+  c.demand rttiSym
   c.dest.addParRi() # "ptr"
   c.dest.addParRi() # "fld"
 
@@ -1046,6 +1054,8 @@ proc trTypeDecl(c: var EContext; n: var Cursor; mode: TraverseMode) =
       flags.incl IsInheritable
     if UnionP in prag.flags:
       flags.incl IsUnion
+    if {ImportcP, ImportcppP} * prag.flags != {}:
+      flags.incl IsImportExternal
     trType c, n, flags
   takeParRi c, n
   swap dst, c.dest
@@ -1359,7 +1369,7 @@ proc trExpr(c: var EContext; n: var Cursor) =
       inc n # skip tag
       trExpr c, n # tuple
       expectIntLit c, n
-      c.dest.add symToken(ithTupleField(c, pool.integers[n.intId], fieldType), n.info)
+      c.dest.add symToken(ithTupleField(c, int pool.integers[n.intId], fieldType), n.info)
       inc n # skip index
       c.dest.addIntLit(0, n.info) # inheritance
       takeParRi c, n
