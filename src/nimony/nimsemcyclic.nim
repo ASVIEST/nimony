@@ -5,7 +5,7 @@
 
 
 import std / [parseopt, strutils, assertions, syncio, tables, osproc, deques, algorithm, sets, hashes]
-import ".." / lib / [nifstreams, nifcursors, bitabs, lineinfos, nifreader, nifbuilder, tooldirs, nifindexes]
+import ".." / lib / [nifstreams, nifcursors, bitabs, lineinfos, nifreader, nifbuilder, tooldirs, nifindexes, toposort]
 import ".." / nimony / [nimony_model, decls, symtabs, programs, semos, semdata, nifconfig, indexgen]
 include sem
 
@@ -35,6 +35,16 @@ proc initSemContext(fileName: string): SemContext =
   for magic in ["typeof", "compiles", "defined", "declared"]:
     result.unoverloadableMagics.incl(pool.strings.getOrIncl(magic))
 
+proc hasCyclicPragma(x: var Cursor): bool =
+  if x.kind == ParLe and x.exprKind == PragmaxX:
+    var y = x
+    inc y
+    skip y
+    if y.substructureKind == PragmasU:
+      inc y
+      if y.kind == Ident and pool.strings[y.litId] == "cyclic":
+        return true
+  false
 
 proc semcheckToplevel(c: var SemContext; n0: Cursor): TokenBuf =
   c.pending.add parLeToken(StmtsS, NoLineInfo)
@@ -56,6 +66,8 @@ type
     nkSymbol
     nkLayout
     nkImport
+    nkImportCyclic
+    # nkInclude
 
   Node = object
     kind: NodeKind
@@ -166,6 +178,11 @@ proc importNode(n: Cursor, suffix: string): Node {.inline.} =
   Node(
     s: pool.syms.getOrIncl("import." & $toUniqueId(n) & '.' & suffix),
     n: n, kind: nkImport)
+
+proc importCyclicNode(n: Cursor, suffix: string): Node {.inline.} =
+  Node(
+    s: pool.syms.getOrIncl("import." & $toUniqueId(n) & '.' & suffix),
+    n: n, kind: nkImportCyclic)
 
 proc ensureNode(c: var CyclicContext; node: Node) =
   discard c.resolveGraph.hasKeyOrPut(node, @[])
@@ -441,7 +458,14 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     c.depsStack.shrink(depsPos)
     c.conditionsStack.shrink(condsPos)
   of ImportS, FromImportS, ImportExceptS:
-    let owner = importNode(n, suffix)
+    var x = n
+    inc x
+    let owner =
+      if hasCyclicPragma(x):
+        importCyclicNode(n, suffix)
+      else:
+        importNode(n, suffix)
+    
     c.addBranchNodes(owner)
     # Will nimony imports be ordered?
     # Not yet, but it's unclear what will happen in the future.
@@ -688,83 +712,27 @@ proc applyOrdinalSemcheck(
   else:
     semStmt s[], n, false
 
-proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[string, TokenBuf]) =
-  # SemcheckSignatures is unusual because it working in topologic order on some decls.
-  # so it need to generate true dest:
-  # (stmts
-  #   Semchecked decls
-  #   Input tree without semchecked decls
-  # )
-  for s in c.semContexts.mvalues:
-    s.phase = SemcheckSignatures
-    s.dest.addParLe TagId(StmtsS), NoLineInfo
+template initFileContext(
+  c: var CyclicContext, fileName: string, 
+  trees: var Table[string, TokenBuf]) =
+  # need to be template because of bug:
+  # c: var CyclicContext not understand that it {.global.}
+  var sc = initSemContext(fileName)
+  var n0 = setupProgram(fileName, fileName & ".tmp.nif")
+  let suffix = splitModulePath(fileName).name
+  trees[suffix] = semcheckToplevel(sc, n0)
+  c.semContexts[suffix] = sc
+  c.semContexts[suffix].tryGetModuleSem = # closures too slow in nim 2 so it uses nimcall
+    proc(suffix: string): ptr SemContext {.nimcall.} =
+      if suffix in c.semContexts:
+        addr c.semContexts[suffix]
+      else: nil
 
-  for node in topo:
-    let sym = node.s
+  if suffix notin prog.mods:
+    prog.mods[suffix] = NifModule()
     
-    let suffix = extractModule(pool.syms[sym])
-    var s = addr c.semContexts[suffix]
-    
-    var canGenerate = true # can become false if some of conditions is false    
-    for cond in c.usedConditions.getOrDefault(sym, @[]):
-      let condValue = evalCond(c, s, cond)
-
-      canGenerate = canGenerate and (
-        condValue == FalseX and cond.isNegative or
-        condValue == TrueX and not cond.isNegative)
-
-    discard c.mergedBranches.hasKeyOrPut(suffix, initHashSet[int]())
-    if canGenerate:
-      if sym in c.symBranches:
-        for branchId in c.symBranches[sym]:
-          if branchId in c.mergedBranches[suffix]: continue
-          s[].currentScope.mergeScope(s[].whenBranchScopes[branchId])
-          c.mergedBranches[suffix].incl branchId
-      if node.kind == nkImport:
-        # basicly semExprMissingPhases but
-        # without Item and adapted for this case
-        var buf = createTokenBuf()
-        s[].canSelfExec = true
-        swap s[].dest, buf
-        var phase = SemcheckImports
-        swap s[].phase, phase
-        var n = node.n
-        semStmt s[], n, false
-        swap s[].phase, phase
-        swap s[].dest, buf
-        s[].canSelfExec = false
-        if buf.len > 0:
-          var n = beginRead(buf)
-          semStmt s[], n, false # exec SemcheckSignatures
-      else:
-        var load = tryLoadSym(sym)
-        semStmt s[], load.decl, false
-    s[].pragmaStack.setLen(0) # {.pop.} fixed?
-
-  for suffix in c.semContexts.keys:
-    # ordinal SemcheckSignatures for not semchecked things
-    var s = addr c.semContexts[suffix]
-    discard c.mergedBranches.hasKeyOrPut(suffix, initHashSet[int]())
-    var n = beginRead(trees[suffix])
-    inc n
-    while n.kind != ParRi:
-      applyOrdinalSemcheck(c, n, s, topo, c.mergedBranches[suffix])
-  
-  for suffix in c.semContexts.keys:
-    var s = addr c.semContexts[suffix]
-    s[].dest.addParRi
-    trees[suffix] = move s[].dest
-
-proc hasCyclicPragma(x: var Cursor): bool =
-  if x.kind == ParLe and x.exprKind == PragmaxX:
-    var y = x
-    inc y
-    skip y
-    if y.substructureKind == PragmasU:
-      inc y
-      if y.kind == Ident and pool.strings[y.litId] == "cyclic":
-        return true
-  false
+  var n = beginRead(trees[suffix])
+  prepareImports(prog.mods[suffix], n)
 
 proc checkCyclicPragma(c: sink CyclicContext, n: var Cursor, s: ptr SemContext) =
   # We already in SCC, so only need to check that
@@ -777,26 +745,26 @@ proc checkCyclicPragma(c: sink CyclicContext, n: var Cursor, s: ptr SemContext) 
     while n.kind != ParRi:
       checkCyclicPragma(c, n, s)
     inc n # ParRi
-  of WhenS:
-    inc n
-    skip n # (id )
-    while n.kind != ParRi:
-      case n.substructureKind
-      of ElifU:
-        inc n # (elif
-        skip n # (id )
-        skip n # cond; it is max interface so not need testing cond
-        checkCyclicPragma(c, n, s)
-        inc n # ParRi
-      of ElseU:
-        inc n # (else
-        skip n # (id )
-        checkCyclicPragma(c, n, s)
-        inc n # ParRi
-      else:
-        echo n
-        quit "Invalid ast"
-    inc n # ParRi
+  # of WhenS:
+  #   inc n
+  #   skip n # (id )
+  #   while n.kind != ParRi:
+  #     case n.substructureKind
+  #     of ElifU:
+  #       inc n # (elif
+  #       skip n # (id )
+  #       skip n # cond; it is max interface so not need testing cond
+  #       checkCyclicPragma(c, n, s)
+  #       inc n # ParRi
+  #     of ElseU:
+  #       inc n # (else
+  #       skip n # (id )
+  #       checkCyclicPragma(c, n, s)
+  #       inc n # ParRi
+  #     else:
+  #       echo n
+  #       quit "Invalid ast"
+  #   inc n # ParRi
   of ImportS, FromImportS, ImportExceptS:
     let info = n.info
     let origin = getFile(info)
@@ -827,56 +795,143 @@ proc checkCyclicPragma(c: sink CyclicContext, n: var Cursor, s: ptr SemContext) 
   else:
     skip n
 
+proc semcheckImports(
+  c: var CyclicContext, fileName: string, 
+  trees: var Table[string, TokenBuf], validateCyclicPragma: bool) =
+  let suffix = splitModulePath(fileName).name
+  var s = addr c.semContexts[suffix]
+
+  if validateCyclicPragma:
+    var n1 = beginRead(trees[suffix])
+    takeTree s[], n1
+    var n2 = beginRead(trees[suffix])
+    
+    s[].dest.shrink(s[].dest.len - 1) # remove last ParRi to get space for errors
+    checkCyclicPragma(c, n2, s)
+    s[].dest.addParRi() # add last ParRi
+    trees[suffix] = move s[].dest
+      
+  var n = beginRead(trees[suffix])
+  var tree = phaseX(s[], n, SemcheckImports)
+  trees[suffix] = tree
+
+proc reportErrors(
+  c: var CyclicContext, fileName: string, 
+  trees: var Table[string, TokenBuf]
+): bool =
+  result = false
+  let suffix = splitModulePath(fileName).name
+  var s = addr c.semContexts[suffix]
+  swap s[].dest, trees[suffix]
+  if reportErrors(s[]) > 0:
+    result = true
+  swap s[].dest, trees[suffix]
+
+proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[string, TokenBuf], validateCyclicPragma: bool) =
+  # SemcheckSignatures is unusual because it working in topologic order on some decls.
+  # so it need to generate true dest:
+  # (stmts
+  #   Semchecked decls
+  #   Input tree without semchecked decls
+  # )
+  var pearceKelly = initPearceKellyTopo(
+    topo,
+    c.graph
+  )
+
+  for s in c.semContexts.mvalues:
+    s.phase = SemcheckSignatures
+    s.dest.addParLe TagId(StmtsS), NoLineInfo
+
+  for node in topo:
+    let sym = node.s
+    
+    let suffix = extractModule(pool.syms[sym])
+    var s = addr c.semContexts[suffix]
+    
+    var canGenerate = true # can become false if some of conditions is false    
+    for cond in c.usedConditions.getOrDefault(sym, @[]):
+      let condValue = evalCond(c, s, cond)
+
+      canGenerate = canGenerate and (
+        condValue == FalseX and cond.isNegative or
+        condValue == TrueX and not cond.isNegative)
+
+    discard c.mergedBranches.hasKeyOrPut(suffix, initHashSet[int]())
+    if canGenerate:
+      if sym in c.symBranches:
+        for branchId in c.symBranches[sym]:
+          if branchId in c.mergedBranches[suffix]: continue
+          s[].currentScope.mergeScope(s[].whenBranchScopes[branchId])
+          c.mergedBranches[suffix].incl branchId
+      case node.kind
+      of nkImport:
+        # basicly semExprMissingPhases but
+        # without Item and adapted for this case
+        var buf = createTokenBuf()
+        s[].canSelfExec = true
+        swap s[].dest, buf
+        var phase = SemcheckImports
+        swap s[].phase, phase
+        var n = node.n
+        semStmt s[], n, false
+        swap s[].phase, phase
+        swap s[].dest, buf
+        s[].canSelfExec = false
+        if buf.len > 0:
+          var n = beginRead(buf)
+          semStmt s[], n, false # exec SemcheckSignatures
+      of nkImportCyclic:
+        var files: seq[ImportedFilename] = @[]
+        var errors: set[FilenameErr] = {}
+        filenameVal(x, files, errors, true, true)
+        for f1 in files:
+          let f2 = resolveFile(s[].g.config.paths, origin, f1.path)
+          let suffix = moduleSuffix(f2, s[].g.config.paths)
+
+          c.initFileContext(fileName, trees)
+          c.semcheckImports(fileName, trees, validateCyclicPragma)
+          if c.reportErrors(fileName, trees):
+            quit 1
+        
+        # let suffix = splitModulePath(fileName).name
+        # var n = beginRead(trees[suffix])
+        # c.genGraph n, suffix
+
+      of nkSymbol: discard
+      of nkLayout:
+        var load = tryLoadSym(sym)
+        semStmt s[], load.decl, false
+    s[].pragmaStack.setLen(0) # {.pop.} fixed?
+
+  for suffix in c.semContexts.keys:
+    # ordinal SemcheckSignatures for not semchecked things
+    var s = addr c.semContexts[suffix]
+    discard c.mergedBranches.hasKeyOrPut(suffix, initHashSet[int]())
+    var n = beginRead(trees[suffix])
+    inc n
+    while n.kind != ParRi:
+      applyOrdinalSemcheck(c, n, s, topo, c.mergedBranches[suffix])
+  
+  for suffix in c.semContexts.keys:
+    var s = addr c.semContexts[suffix]
+    s[].dest.addParRi
+    trees[suffix] = move s[].dest
+
 proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyclicPragma: bool) =
   var c {.global.} = CyclicContext()
   
   var trees = initTable[string, TokenBuf]()
   for fileName in fileNames:
-    var sc = initSemContext(fileName)
-    var n0 = setupProgram(fileName, fileName & ".tmp.nif") # TODO: replace
-    
-    let suffix = splitModulePath(fileName).name
-    trees[suffix] = semcheckToplevel(sc, n0)
-    c.semContexts[suffix] = sc
-    c.semContexts[suffix].tryGetModuleSem = # closures too slow in nim 2 so it uses nimcall
-      proc(suffix: string): ptr SemContext =
-        if suffix in c.semContexts:
-          addr c.semContexts[suffix]
-        else: nil
-
-    if suffix notin prog.mods:
-      prog.mods[suffix] = NifModule()
-    
-    var n = beginRead(trees[suffix])
-    prepareImports(prog.mods[suffix], n)
+    c.initFileContext(fileName, trees)
   
   for fileName in fileNames:
-    let suffix = splitModulePath(fileName).name
-    var s = addr c.semContexts[suffix]
-
-    if validateCyclicPragma:
-      var n1 = beginRead(trees[suffix])
-      takeTree s[], n1
-      var n2 = beginRead(trees[suffix])
-      
-      s[].dest.shrink(s[].dest.len - 1) # remove last ParRi to get space for errors
-      checkCyclicPragma(c, n2, s)
-      s[].dest.addParRi() # add last ParRi
-      trees[suffix] = move s[].dest
-      
-    var n = beginRead(trees[suffix])
-    var tree = phaseX(s[], n, SemcheckImports)
-    trees[suffix] = tree
+    c.semcheckImports(fileName, trees, validateCyclicPragma)
   
   # Import errors on SCC much simpler to understand when it reported together
   var hasErr = false
   for fileName in fileNames:
-    let suffix = splitModulePath(fileName).name
-    var s = addr c.semContexts[suffix]
-    swap s[].dest, trees[suffix]
-    if reportErrors(s[]) > 0:
-      hasErr = true
-    swap s[].dest, trees[suffix]
+    hasErr = c.reportErrors(fileName, trees)
   
   if hasErr:
     quit 1
@@ -937,12 +992,12 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
       let nodeKind = if node.kind == nkSymbol: "symbol" else: "layout"
       echo pool.syms[node.s], " (", nodeKind, ")"
 
-  var topo: seq[Node] = @[]
-  for node in nodeOrder:
-    if node.kind in {nkLayout, nkImport}:
-      topo.add node
+  # var topo: seq[Node] = @[]
+  # for node in nodeOrder:
+  #   if node.kind in {nkLayout, nkImport, nkImportCyclic}:
+  #     topo.add node
 
-  semcheckSignatures c, topo, trees
+  semcheckSignatures c, nodeOrder, trees, validateCyclicPragma
 
   var i = 0
   for fileName in fileNames:
