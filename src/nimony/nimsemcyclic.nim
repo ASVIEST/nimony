@@ -712,11 +712,14 @@ proc applyOrdinalSemcheck(
   else:
     semStmt s[], n, false
 
-template initFileContext(
+var activeCyclicContext: ptr CyclicContext
+
+proc initFileContext(
   c: var CyclicContext, fileName: string, 
   trees: var Table[string, TokenBuf]) =
   # need to be template because of bug:
   # c: var CyclicContext not understand that it {.global.}
+  activeCyclicContext = addr c
   var sc = initSemContext(fileName)
   var n0 = setupProgram(fileName, fileName & ".tmp.nif")
   let suffix = splitModulePath(fileName).name
@@ -724,8 +727,8 @@ template initFileContext(
   c.semContexts[suffix] = sc
   c.semContexts[suffix].tryGetModuleSem = # closures too slow in nim 2 so it uses nimcall
     proc(suffix: string): ptr SemContext {.nimcall.} =
-      if suffix in c.semContexts:
-        addr c.semContexts[suffix]
+      if suffix in activeCyclicContext[].semContexts:
+        addr activeCyclicContext[].semContexts[suffix]
       else: nil
 
   if suffix notin prog.mods:
@@ -834,10 +837,10 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[
   #   Semchecked decls
   #   Input tree without semchecked decls
   # )
-  var pearceKelly = initPearceKellyTopo(
-    topo,
-    c.graph
-  )
+  # var pearceKelly = initPearceKellyTopo(
+  #   topo,
+  #   c.graph
+  # )
 
   for s in c.semContexts.mvalues:
     s.phase = SemcheckSignatures
@@ -884,20 +887,24 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[
       of nkImportCyclic:
         var files: seq[ImportedFilename] = @[]
         var errors: set[FilenameErr] = {}
+        var x = node.n
+        let origin = getFile(x.info)
+        inc x
         filenameVal(x, files, errors, true, true)
         for f1 in files:
           let f2 = resolveFile(s[].g.config.paths, origin, f1.path)
           let suffix = moduleSuffix(f2, s[].g.config.paths)
-
+          let fileName = parseFileIntoFile(
+            f2,
+            s[].g.config.paths,
+            s[].g.config.nifcachePath)
+          
+          # TODO: fix bug where changes in imported
+          # here module does not update compilation
           c.initFileContext(fileName, trees)
           c.semcheckImports(fileName, trees, validateCyclicPragma)
           if c.reportErrors(fileName, trees):
             quit 1
-        
-        # let suffix = splitModulePath(fileName).name
-        # var n = beginRead(trees[suffix])
-        # c.genGraph n, suffix
-
       of nkSymbol: discard
       of nkLayout:
         var load = tryLoadSym(sym)

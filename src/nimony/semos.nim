@@ -296,6 +296,15 @@ proc parseFile*(nimFile: string; paths: openArray[string], nifcachePath: string)
   finally:
     nifstreams.close(stream)
 
+proc parseFileIntoFile*(nimFile: string; paths: openArray[string], nifcachePath: string): string =
+  let nifler = findTool("nifler")
+  let name = moduleSuffix(nimFile, paths)
+  let src = nifcachePath / name & ".p.nif"
+  exec quoteShell(nifler) & " --portablePaths --deps parse " & quoteShell(nimFile) & " " &
+    quoteShell(src)
+  
+  src
+
 proc getFile*(info: PackedLineInfo): string =
   let fid = unpack(pool.man, info).file
   if fid.isValid:
