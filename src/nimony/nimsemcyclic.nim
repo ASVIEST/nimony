@@ -831,22 +831,25 @@ proc reportErrors(
   swap s[].dest, trees[suffix]
 
 proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[string, TokenBuf], validateCyclicPragma: bool) =
+  # use actual topological order as init step for
+  # incremental topological sort
+  var edges = newSeqOfCap[(Node, Node)](c.resolveGraph.len * 2)
+  for (owner, deps) in c.resolveGraph.pairs:
+    for dep in deps:
+      edges.add (dep, owner)
+  var pearceKelly = initPearceKellyTopo(topo, edges)
+  
   # SemcheckSignatures is unusual because it working in topologic order on some decls.
   # so it need to generate true dest:
   # (stmts
   #   Semchecked decls
   #   Input tree without semchecked decls
   # )
-  # var pearceKelly = initPearceKellyTopo(
-  #   topo,
-  #   c.graph
-  # )
-
   for s in c.semContexts.mvalues:
     s.phase = SemcheckSignatures
     s.dest.addParLe TagId(StmtsS), NoLineInfo
 
-  for node in topo:
+  for node in pearceKelly.topoItems:
     let sym = node.s
     
     let suffix = extractModule(pool.syms[sym])

@@ -17,6 +17,10 @@ proc contains*[T](g: PearceKellyTopo[T], v: T): bool {.inline.} =
 proc len*[T](g: PearceKellyTopo[T]): int {.inline.} =
   g.verts.len
 
+iterator topoItems*[T](g: PearceKellyTopo[T]): T =
+  for i in 0..<g.inv.len:
+    yield g.verts[g.inv[i]]
+
 proc initPearceKellyTopo*[T](verts: seq[T]): PearceKellyTopo[T] =
   let n = verts.len
   var g = PearceKellyTopo[T](
