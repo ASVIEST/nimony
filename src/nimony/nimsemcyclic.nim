@@ -167,6 +167,8 @@ type
     whenBranchEuler: Euler[int]
     whenBranchSubtreeStart: Table[int, int] # when branch to first when branch in this scope
 
+    pearceKelly: PearceKellyTopo[Node]
+
 proc layoutNode(sym: SymId): Node {.inline.} =
   Node(s: sym, kind: nkLayout)
 
@@ -186,11 +188,16 @@ proc importCyclicNode(n: Cursor, suffix: string): Node {.inline.} =
 
 proc ensureNode(c: var CyclicContext; node: Node) =
   discard c.resolveGraph.hasKeyOrPut(node, @[])
+  if c.pearceKelly != nil:
+    c.pearceKelly.addVertex(node)
 
 proc addEdge(c: var CyclicContext; fromNode, toNode: Node) =
   var dest {.cursor.} = c.resolveGraph.mgetOrPut(fromNode, @[])
   if toNode notin dest:
     c.resolveGraph[fromNode].add toNode
+    if c.pearceKelly != nil:
+      if not c.pearceKelly.addEdge(fromNode, toNode):
+        error "cyclic type dependence detected"
 
 proc addLayoutToSymbolEdge(c: var CyclicContext; sym: SymId) =
   c.ensureNode(layoutNode(sym))
@@ -837,7 +844,7 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[
   for (owner, deps) in c.resolveGraph.pairs:
     for dep in deps:
       edges.add (dep, owner)
-  var pearceKelly = initPearceKellyTopo(topo, edges)
+  c.pearceKelly = initPearceKellyTopo(topo, edges)
   
   # SemcheckSignatures is unusual because it working in topologic order on some decls.
   # so it need to generate true dest:
@@ -849,7 +856,7 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[
     s.phase = SemcheckSignatures
     s.dest.addParLe TagId(StmtsS), NoLineInfo
 
-  for node in pearceKelly.topoItems:
+  for node in c.pearceKelly.topoItems:
     let sym = node.s
     
     let suffix = extractModule(pool.syms[sym])
@@ -908,6 +915,14 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[
           c.semcheckImports(fileName, trees, validateCyclicPragma)
           if c.reportErrors(fileName, trees):
             quit 1
+          # TODO: need to fill when branch euler to
+          # correctly generate new module
+          var n = beginRead(trees[suffix])
+          let depsPos = c.depsStack.len
+          c.depsStack.add node # imported module nodes depend
+                               # on import node
+          c.genGraph n, suffix
+          c.depsStack.shrink depsPos
       of nkSymbol: discard
       of nkLayout:
         var load = tryLoadSym(sym)
@@ -1008,6 +1023,24 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
   #     topo.add node
 
   semcheckSignatures c, nodeOrder, trees, validateCyclicPragma
+
+  when false:
+    for node, deps in c.resolveGraph:
+      let nodeKind = if node.kind == nkSymbol: "symbol" else: "layout"
+      echo pool.syms[node.s], " (", nodeKind, ")"
+      for dep in deps:
+        let depKind = if dep.kind == nkSymbol: "symbol" else: "layout"
+        echo "  -> ", pool.syms[dep.s], " (", depKind, ")"
+      echo ""
+    
+    echo "conds: "
+    for i, v in c.usedConditions:
+      echo pool.syms[i]
+      echo ": "
+      for j in v:
+        echo c.conditions.nodes[j.id]
+        echo j.isNegative
+    echo "------"
 
   var i = 0
   for fileName in fileNames:

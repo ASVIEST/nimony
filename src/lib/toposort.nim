@@ -135,3 +135,15 @@ proc addEdge*[T](g: var PearceKellyTopo[T], x, y: T): bool =
   g.adj[g.pos[x]].add g.pos[y]
   g.radj[g.pos[y]].add g.pos[x]
   true
+
+proc addVertex*[T](g: var PearceKellyTopo[T], x: T) =
+  if x in g.pos: return
+
+  let idx = g.verts.len
+  g.verts.add x
+  g.pos[x] = idx
+  g.adj.add @[]
+  g.radj.add @[]
+  g.visited.add false
+  g.topo.add g.inv.len
+  g.inv.add idx
