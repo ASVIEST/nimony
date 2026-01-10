@@ -1,5 +1,5 @@
 # Incremental topological sort using Pearce-Kelly algorithm
-import std/[algorithm, tables]
+import std/[algorithm, tables, sets]
 
 type
   PearceKellyTopo*[T] = ref object
@@ -10,6 +10,7 @@ type
     verts: seq[T]
     pos: Table[T, int]
     visited: seq[bool]
+    graphUpdated: bool
 
 proc contains*[T](g: PearceKellyTopo[T], v: T): bool {.inline.} =
   v in g.pos
@@ -17,9 +18,25 @@ proc contains*[T](g: PearceKellyTopo[T], v: T): bool {.inline.} =
 proc len*[T](g: PearceKellyTopo[T]): int {.inline.} =
   g.verts.len
 
-iterator topoItems*[T](g: PearceKellyTopo[T]): T =
-  for i in 0..<g.inv.len:
-    yield g.verts[g.inv[i]]
+iterator topoItems*[T](g: var PearceKellyTopo[T]): T =
+  # graph can dynamicly rebuild during this iterator
+  # so... we manage updates via graphUpdated
+
+  var i = 0
+  var known = initHashSet[int]()
+  g.graphUpdated = false
+
+  while i < g.inv.len:
+    if g.graphUpdated:
+      g.graphUpdated = false
+      i = 0
+      continue
+
+    if g.inv[i] notin known:
+      yield g.verts[g.inv[i]]
+      known.incl g.inv[i]
+
+    inc i
 
 proc initPearceKellyTopo*[T](verts: seq[T]): PearceKellyTopo[T] =
   let n = verts.len
@@ -114,6 +131,7 @@ proc reorder[T](g: PearceKellyTopo[T], deltaB, deltaF: var seq[int]) =
   for i, node in L:
     g.topo[node] = R[i]
     g.inv[R[i]] = node
+  g.graphUpdated = true
 
 proc addEdge*[T](g: var PearceKellyTopo[T], x, y: T): bool =
   var deltaF: seq[int] = @[]
@@ -147,3 +165,4 @@ proc addVertex*[T](g: var PearceKellyTopo[T], x: T) =
   g.visited.add false
   g.topo.add g.inv.len
   g.inv.add idx
+  g.graphUpdated = true

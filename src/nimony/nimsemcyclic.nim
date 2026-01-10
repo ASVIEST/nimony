@@ -68,6 +68,7 @@ type
     nkImport
     nkImportCyclic
     # nkInclude
+    nkUnresolved
 
   Node = object
     kind: NodeKind
@@ -168,6 +169,7 @@ type
     whenBranchSubtreeStart: Table[int, int] # when branch to first when branch in this scope
 
     pearceKelly: PearceKellyTopo[Node]
+    filePaths: Table[string, string]
 
 proc layoutNode(sym: SymId): Node {.inline.} =
   Node(s: sym, kind: nkLayout)
@@ -183,8 +185,13 @@ proc importNode(n: Cursor, suffix: string): Node {.inline.} =
 
 proc importCyclicNode(n: Cursor, suffix: string): Node {.inline.} =
   Node(
-    s: pool.syms.getOrIncl("import." & $toUniqueId(n) & '.' & suffix),
+    s: pool.syms.getOrIncl("cyclicimport." & $toUniqueId(n) & '.' & suffix),
     n: n, kind: nkImportCyclic)
+
+proc unresolvedNode(sym: SymId, suffix: string): Node {.inline.} =
+  Node(
+    s: sym,
+    kind: nkUnresolved)
 
 proc ensureNode(c: var CyclicContext; node: Node) =
   discard c.resolveGraph.hasKeyOrPut(node, @[])
@@ -215,12 +222,21 @@ proc resolveSym(c: var CyclicContext, sym: SymId, syms: var seq[SymId]) =
     if symKind(load.decl) != TypevarY: # In resolve graph Type shouldn't depend to TypeVar
       syms.add sym
 
-proc resolveIdent(c: var CyclicContext, n: sink Cursor, s: ptr SemContext, syms: var seq[SymId]) =
+proc resolveIdent(
+  c: var CyclicContext, n: sink Cursor,
+  s: ptr SemContext, syms: var seq[SymId],
+  unresolved: var seq[StrId]) =
   let insertPos = s[].dest.len
   let count = buildSymChoice(s[], n.litId, n.info, InnerMost)
   if count == 1:
     let sym = s[].dest[insertPos+1].symId
     resolveSym c, sym, syms
+  else:
+    # Ident not resolved, it possible on two ways:
+    # 1. undeclared identifier
+    # 2. symbol that will defined in future at incremental
+    # topological sorting
+    unresolved.add n.litId
   
   if s[].currentScope.kind == ToplevelScope and s[].currentScope.up == nil:
     # It need because we don't have whenBranchSubtreeStart for
@@ -238,7 +254,10 @@ proc resolveIdent(c: var CyclicContext, n: sink Cursor, s: ptr SemContext, syms:
 
   s[].dest.shrink insertPos
 
-proc scanExprSyms(c: var CyclicContext, n: var Cursor, s: ptr SemContext, syms: var seq[SymId]) =
+proc scanExprSyms(
+  c: var CyclicContext, n: var Cursor,
+  s: ptr SemContext, syms: var seq[SymId],
+  unresolved: var seq[StrId]) =
   if n.kind == ParLe:
     var nested = 0
     while true:
@@ -250,11 +269,11 @@ proc scanExprSyms(c: var CyclicContext, n: var Cursor, s: ptr SemContext, syms: 
       elif n.kind in {Symbol, SymbolDef}:
         resolveSym c, n.symId, syms
       elif n.kind == Ident:
-        resolveIdent c, n, s, syms
+        resolveIdent c, n, s, syms, unresolved
   elif n.kind in {Symbol, SymbolDef}:
     resolveSym c, n.symId, syms
   elif n.kind == Ident:
-    resolveIdent c, n, s, syms
+    resolveIdent c, n, s, syms, unresolved
   
   inc n
 
@@ -328,10 +347,21 @@ proc dependencyKind(n: Cursor): NodeKind =
   else:
     nkLayout
 
-proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromNode: Node) =
+proc addBranchNodes(c: var CyclicContext, owner: Node)=
+  c.ensureNode(owner)
+  for dep in c.depsStack:
+    c.ensureNode(dep)
+    c.addEdge(owner, dep)
+      
+  c.usedConditions.mgetOrPut(owner.s, @[]).add c.conditionsStack
+  if c.branchesStack.len > 0:
+    c.symBranches[owner.s] = c.branchesStack
+
+proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromNode: Node, suffix: string) =
   let depKind = dependencyKind(n)
   var syms: seq[SymId] = @[]
-  scanExprSyms c, n, s, syms
+  var unresolved: seq[StrId] = @[]
+  scanExprSyms c, n, s, syms, unresolved
   for sym in syms:
     let load = tryLoadSym(sym)
     if load.status != LacksNothing:
@@ -343,9 +373,19 @@ proc graphExpr(c: var CyclicContext, n: var Cursor, s: ptr SemContext, fromNode:
       target = symbolNode(sym)
     else:
       c.ensureNode(target)
+
+    c.addEdge(fromNode, target)
+  
+  if unresolved.len > 0:
+    var target = unresolvedNode(fromNode.s, suffix)
+    c.ensureNode(target)
+    c.addBranchNodes(target)
     c.addEdge(fromNode, target)
 
-proc collectRoutineDeps(c: var CyclicContext; root: Cursor; s: ptr SemContext; outSyms: var seq[SymId]) =
+proc collectRoutineDeps(
+  c: var CyclicContext; root: Cursor;
+  s: ptr SemContext; outSyms: var seq[SymId];
+  unresolved: var seq[StrId]) =
   var stack = @[root]
   while stack.len > 0:
     var cur = stack.pop()
@@ -361,17 +401,7 @@ proc collectRoutineDeps(c: var CyclicContext; root: Cursor; s: ptr SemContext; o
       resolveSym(c, cur.symId, outSyms)
     elif cur.kind == Ident:
       var tmp = cur
-      resolveIdent(c, tmp, s, outSyms)
-
-proc addBranchNodes(c: var CyclicContext, owner: Node)=
-  c.ensureNode(owner)
-  for dep in c.depsStack:
-    c.ensureNode(dep)
-    c.addEdge(owner, dep)
-      
-  c.usedConditions.mgetOrPut(owner.s, @[]).add c.conditionsStack
-  if c.branchesStack.len > 0:
-    c.symBranches[owner.s] = c.branchesStack
+      resolveIdent(c, tmp, s, outSyms, unresolved)
 
 proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
   case n.stmtKind
@@ -400,7 +430,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         # type cannot be built, so this checking correct
         var field = takeLocal(n, SkipFinalParRi)
         var s = addr c.semContexts[suffix]
-        graphExpr c, field.typ, s, owner
+        graphExpr c, field.typ, s, owner, suffix
 
     inc n
     inc n
@@ -437,11 +467,16 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         c.branchesStack.add branchId
 
         var syms: seq[SymId] = @[]
+        var unresolved: seq[StrId] = @[]
         c.conditionsStack.add store(c.conditions, n, branchId) # store condition
-        scanExprSyms c, n, s, syms # cond
+        scanExprSyms c, n, s, syms, unresolved # cond
         for sym in syms:
           c.depsStack.add layoutNode(sym)
+
+        let depsPos = c.depsStack.len
         genGraph(c, n, suffix)
+        c.depsStack.shrink(depsPos)
+
         inc n # ParRi
         c.conditionsStack[^1].makeNegative # need for correct else
         s[].currentScope = s[].currentScope.up
@@ -474,12 +509,12 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
         importNode(n, suffix)
     
     c.addBranchNodes(owner)
-    # Will nimony imports be ordered?
+    # It makes nimony imports (in when) ordered, is it correct?
     # Not yet, but it's unclear what will happen in the future.
     # In any case, to maintain order (in this case),
     # you need to uncomment the following line.
     
-    # c.depsStack.add owner
+    c.depsStack.add owner
     skip n
   elif n.symKind.isLocal:
     var decl = asLocal(n)
@@ -488,7 +523,7 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
       let owner = layoutNode(decl.name.symId)
       c.ensureNode(owner)
       c.addBranchNodes(owner)
-      graphExpr c, decl.val, s, layoutNode(decl.name.symId)
+      graphExpr c, decl.val, s, layoutNode(decl.name.symId), suffix
     skip n
   elif n.symKind.isRoutine:
     var decl = asRoutine(n)
@@ -497,9 +532,11 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     c.ensureNode(owner)
     c.addBranchNodes(owner)
     var deps: seq[SymId] = @[]
+    var unresolvedDeps: seq[StrId] = @[] # TODO: support unresolved deps
+                                             # for proc
     let declLoad = tryLoadSym(decl.name.symId)
     if declLoad.status == LacksNothing:
-      collectRoutineDeps(c, declLoad.decl, s, deps)
+      collectRoutineDeps(c, declLoad.decl, s, deps, unresolvedDeps)
     for depSym in deps:
       let load = tryLoadSym(depSym)
       if load.status != LacksNothing:
@@ -730,6 +767,7 @@ proc initFileContext(
   var sc = initSemContext(fileName)
   var n0 = setupProgram(fileName, fileName & ".tmp.nif")
   let suffix = splitModulePath(fileName).name
+  c.filePaths[suffix] = fileName
   trees[suffix] = semcheckToplevel(sc, n0)
   c.semContexts[suffix] = sc
   c.semContexts[suffix].tryGetModuleSem = # closures too slow in nim 2 so it uses nimcall
@@ -755,26 +793,6 @@ proc checkCyclicPragma(c: sink CyclicContext, n: var Cursor, s: ptr SemContext) 
     while n.kind != ParRi:
       checkCyclicPragma(c, n, s)
     inc n # ParRi
-  # of WhenS:
-  #   inc n
-  #   skip n # (id )
-  #   while n.kind != ParRi:
-  #     case n.substructureKind
-  #     of ElifU:
-  #       inc n # (elif
-  #       skip n # (id )
-  #       skip n # cond; it is max interface so not need testing cond
-  #       checkCyclicPragma(c, n, s)
-  #       inc n # ParRi
-  #     of ElseU:
-  #       inc n # (else
-  #       skip n # (id )
-  #       checkCyclicPragma(c, n, s)
-  #       inc n # ParRi
-  #     else:
-  #       echo n
-  #       quit "Invalid ast"
-  #   inc n # ParRi
   of ImportS, FromImportS, ImportExceptS:
     let info = n.info
     let origin = getFile(info)
@@ -855,13 +873,13 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[
   for s in c.semContexts.mvalues:
     s.phase = SemcheckSignatures
     s.dest.addParLe TagId(StmtsS), NoLineInfo
-
+  var topo: seq[Node] = @[]
   for node in c.pearceKelly.topoItems:
+    topo.add node
     let sym = node.s
-    
     let suffix = extractModule(pool.syms[sym])
     var s = addr c.semContexts[suffix]
-    
+    s[].phase = SemcheckSignatures # ensure phase is correct
     var canGenerate = true # can become false if some of conditions is false    
     for cond in c.usedConditions.getOrDefault(sym, @[]):
       let condValue = evalCond(c, s, cond)
@@ -918,15 +936,36 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[
           # TODO: need to fill when branch euler to
           # correctly generate new module
           var n = beginRead(trees[suffix])
-          let depsPos = c.depsStack.len
-          c.depsStack.add node # imported module nodes depend
-                               # on import node
           c.genGraph n, suffix
-          c.depsStack.shrink depsPos
+          c.semContexts[suffix].phase = SemcheckSignatures
+          c.semContexts[suffix].dest.addParLe TagId(StmtsS), NoLineInfo
+        
+        # initial semcheckImports not working for
+        # conditional imports so we need to run
+        # SemcheckImports for it
+        # notice that it not use self exec because new module
+        # shouldn't compiled by other nimony instance other to current
+        # nimsemcyclic
+        var buf = createTokenBuf()
+        swap s[].dest, buf
+        var phase = SemcheckImports
+        swap s[].phase, phase
+        var n = node.n
+        semStmt s[], n, false
+        swap s[].phase, phase
+        swap s[].dest, buf
+        if buf.len > 0:
+          var n = beginRead(buf)
+          semStmt s[], n, false # exec SemcheckSignatures
       of nkSymbol: discard
       of nkLayout:
         var load = tryLoadSym(sym)
         semStmt s[], load.decl, false
+      of nkUnresolved:
+        # fix graph state
+        var load = tryLoadSym(sym)
+        c.genGraph load.decl, suffix
+
     s[].pragmaStack.setLen(0) # {.pop.} fixed?
 
   for suffix in c.semContexts.keys:
@@ -1042,9 +1081,19 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
         echo j.isNegative
     echo "------"
 
-  var i = 0
-  for fileName in fileNames:
-    let suffix = splitModulePath(fileName).name
+  # finalOutputs = outputFileNames + new outputs
+  var finalOutputs = initTable[string, string]()
+  for i in 0 ..< fileNames.len:
+    let suffix = splitModulePath(fileNames[i]).name
+    finalOutputs[suffix] = outputFileNames[i]
+  
+  for suffix in c.semContexts.keys:
+    if suffix notin finalOutputs:
+      let path = c.filePaths.getOrDefault(suffix, suffix)
+      finalOutputs[suffix] = changeModuleExt(path, ".s.nif")
+
+  for suffix in c.semContexts.keys:
+    let outputFileName = finalOutputs[suffix]
     var n = beginRead(trees[suffix])
     
     var s = addr c.semContexts[suffix]
@@ -1086,11 +1135,9 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
       quit 1
 
     if reportErrors(s[]) == 0:
-      writeOutput s[], outputFileNames[i]
+      writeOutput s[], outputFileName
     else:
       quit 1
-    
-    inc i
 
 type
   Command = enum
