@@ -67,7 +67,7 @@ type
     nkLayout
     nkImport
     nkImportCyclic
-    # nkInclude
+    nkInclude
     nkUnresolved
 
   Node = object
@@ -187,6 +187,11 @@ proc importCyclicNode(n: Cursor, suffix: string): Node {.inline.} =
   Node(
     s: pool.syms.getOrIncl("cyclicimport." & $toUniqueId(n) & '.' & suffix),
     n: n, kind: nkImportCyclic)
+
+proc includeNode(n: Cursor, suffix: string): Node {.inline.} =
+  Node(
+    s: pool.syms.getOrIncl("include." & $toUniqueId(n) & '.' & suffix),
+    n: n, kind: nkInclude)
 
 proc unresolvedNode(sym: SymId, suffix: string): Node {.inline.} =
   Node(
@@ -514,6 +519,11 @@ proc genGraph(c: var CyclicContext, n: var Cursor, suffix: string) =
     # In any case, to maintain order (in this case),
     # you need to uncomment the following line.
     
+    c.depsStack.add owner
+    skip n
+  of IncludeS:
+    let owner = includeNode(n, suffix)
+    c.addBranchNodes(owner)
     c.depsStack.add owner
     skip n
   elif n.symKind.isLocal:
@@ -912,7 +922,8 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[
         if buf.len > 0:
           var n = beginRead(buf)
           semStmt s[], n, false # exec SemcheckSignatures
-      of nkImportCyclic:
+      of nkImportCyclic, nkInclude:
+        let parentSuffix = suffix
         var files: seq[ImportedFilename] = @[]
         var errors: set[FilenameErr] = {}
         var x = node.n
@@ -929,16 +940,24 @@ proc semcheckSignatures(c: var CyclicContext, topo: seq[Node], trees: var Table[
           
           # TODO: fix bug where changes in imported
           # here module does not update compilation
-          c.initFileContext(fileName, trees)
-          c.semcheckImports(fileName, trees, validateCyclicPragma)
-          if c.reportErrors(fileName, trees):
-            quit 1
-          # TODO: need to fill when branch euler to
-          # correctly generate new module
-          var n = beginRead(trees[suffix])
-          c.genGraph n, suffix
-          c.semContexts[suffix].phase = SemcheckSignatures
-          c.semContexts[suffix].dest.addParLe TagId(StmtsS), NoLineInfo
+          if node.kind == nkInclude:
+            var buf = parseFile(
+              f2,
+              s[].g.config.paths,
+              s[].g.config.nifcachePath)
+            var n = beginRead(buf)
+            c.genGraph n, parentSuffix
+          else:
+            c.initFileContext(fileName, trees)
+            c.semcheckImports(fileName, trees, validateCyclicPragma)
+            if c.reportErrors(fileName, trees):
+              quit 1
+            # TODO: need to fill when branch euler to
+            # correctly generate new module
+            var n = beginRead(trees[suffix])
+            c.genGraph n, suffix
+            c.semContexts[suffix].phase = SemcheckSignatures
+            c.semContexts[suffix].dest.addParLe TagId(StmtsS), NoLineInfo
         
         # initial semcheckImports not working for
         # conditional imports so we need to run
@@ -1055,11 +1074,6 @@ proc cyclicSem(fileNames: seq[string], outputFileNames: seq[string], validateCyc
     for node in nodeOrder:
       let nodeKind = if node.kind == nkSymbol: "symbol" else: "layout"
       echo pool.syms[node.s], " (", nodeKind, ")"
-
-  # var topo: seq[Node] = @[]
-  # for node in nodeOrder:
-  #   if node.kind in {nkLayout, nkImport, nkImportCyclic}:
-  #     topo.add node
 
   semcheckSignatures c, nodeOrder, trees, validateCyclicPragma
 
