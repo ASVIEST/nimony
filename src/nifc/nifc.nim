@@ -189,7 +189,7 @@ proc handleCmdLine() =
           quit "command takes a filename"
         else:
           for inp in items args:
-            let outp = s.config.nifcacheDir / splitFile(inp).name.mangleFileName & ".wasm"
+            let outp = s.config.nifcacheDir / splitModulePath(inp).name & ".wasm"
             generateWasm inp, outp
       of atNone:
         quit "targets are not specified"
