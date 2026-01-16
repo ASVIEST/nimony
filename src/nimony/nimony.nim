@@ -195,6 +195,7 @@ proc handleCmdLine(c: var CmdOptions; cmdLineArgs: seq[string]; mode: CmdMode) =
         of "os":
           if not c.config.setTargetOS(val):
             quit "unknown OS: " & val
+          forwardArgNifc = true
         of "boundchecks":
           forwardArg = false
           case val

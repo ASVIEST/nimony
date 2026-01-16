@@ -145,7 +145,9 @@ proc isDefined*(config: NifConfig; symbol: string): bool =
                             osQnx, osAtari, osAix,
                             osHaiku, osVxWorks, osSolaris, osNetbsd,
                             osFreebsd, osOpenbsd, osDragonfly, osMacosx, osIos,
-                            osAndroid, osNintendoSwitch, osFreeRTOS, osCrossos, osZephyr, osNuttX}
+                            osAndroid, osNintendoSwitch, osFreeRTOS, osCrossos, osZephyr, osNuttX, osWasi}
+    of "wasi":
+      result = config.targetOS == osWasi
     of "linux":
       result = config.targetOS in {osLinux, osAndroid}
     of "bsd":

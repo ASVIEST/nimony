@@ -12,7 +12,7 @@
 import std / [assertions, syncio, tables, sets, intsets, strutils, options, strformat, genasts, macros]
 from std / os import changeFileExt, splitFile, extractFilename
 
-import .. / .. / lib / [bitabs, lineinfos, nifstreams, nifcursors]
+import .. / .. / lib / [bitabs, lineinfos, nifstreams, nifcursors, platform]
 import ".." / [nifc_model, typenav]
 
 import wasm_builder
@@ -123,6 +123,7 @@ type
     heapSize: WasmGlobalIdx
 
     globalData: seq[uint8]
+    targetOS*: TSystemOS
 
 type
   TypeList = object
@@ -183,8 +184,8 @@ proc loadInstr*(c: GeneratedCode, op: WasmInstrKind, offset: uint32, align: uint
   instr.memArg = WasmMemArg(offset: offset, align: align)
   c.currentExpr.instr.add instr
 
-proc initGeneratedCode*(m: sink Module; intmSize: int): GeneratedCode =
-  result = GeneratedCode(m: m, intmSize: intmSize)
+proc initGeneratedCode*(m: sink Module; intmSize: int; targetOS: TSystemOS): GeneratedCode =
+  result = GeneratedCode(m: m, intmSize: intmSize, targetOS: targetOS)
 
 proc error(m: Module; msg: string; n: Cursor) {.noreturn.} =
   let info = n.info
@@ -643,7 +644,7 @@ proc genImp(c: var GeneratedCode; n: var Cursor) =
   assert name.endsWith(".c")
   let backslash = name.find("\\")
   let (env, funcName) = if backslash == -1:
-    ("env", name)
+    ((if c.targetOS == osWasi: "wasi_snapshot_preview1" else: "env"), name)
   else:
     (name[0..<backslash], name[backslash + 1..^1])
   c.wasmFuncs[prc.name.symId] = c.builder.addImport(env, funcName[0..^3], inputs, outputs)
@@ -1428,9 +1429,9 @@ proc generateFunctionSignatures(c: var GeneratedCode; n: var Cursor) =
   else:
     error c.m, "expected `stmts` but got: ", n
 
-proc generateWasm*(inp, outp: string) =
+proc generateWasm*(inp, outp: string, targetOS: TSystemOS) =
   # registerTags()
-  var c = initGeneratedCode(load(inp), 8)
+  var c = initGeneratedCode(load(inp), 8, targetOS)
   echo "generateWasm ", inp, " -> ", outp
   if inp.find("sys") != -1:
     return

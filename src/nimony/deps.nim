@@ -384,40 +384,41 @@ proc generateFinalBuildFile(c: DepContext; commandLineArgsNifc: string; passC, p
     defineHexerCmds(b, hexer, c.config.bits)
 
     # Command for C compiler (object files)
-    b.withTree "cmd":
-      b.addSymbolDef "cc"
-      b.addStrLit c.config.cc
-      b.addStrLit "-c"
-      if passC.len > 0:
-        for arg in passC.split(' '):
-          if arg.len > 0:
-            b.addStrLit arg
-      for i in c.passC:
-        b.addStrLit i
-      b.addStrLit "-I" & rootPath(c)
-      b.addKeyw "args"
-      b.addKeyw "input"
-      b.addStrLit "-o"
-      b.addKeyw "output"
-
-    # Command for linking
-    if c.cmd in {DoCompile, DoRun}:
+    if target != "wasm":
       b.withTree "cmd":
-        b.addSymbolDef "link"
-        b.addStrLit c.config.linker
-        b.addStrLit "-o"
-        b.addKeyw "output"
-        b.withTree "input":
-          b.addIntLit 0
-          b.addIntLit -1  # all inputs
-        b.withTree "argsext":
-          b.addStrLit ".linker.args"
-        if passL.len > 0:
-          for arg in passL.split(' '):
+        b.addSymbolDef "cc"
+        b.addStrLit c.config.cc
+        b.addStrLit "-c"
+        if passC.len > 0:
+          for arg in passC.split(' '):
             if arg.len > 0:
               b.addStrLit arg
-        for i in c.passL:
+        for i in c.passC:
           b.addStrLit i
+        b.addStrLit "-I" & rootPath(c)
+        b.addKeyw "args"
+        b.addKeyw "input"
+        b.addStrLit "-o"
+        b.addKeyw "output"
+
+      # Command for linking
+      if c.cmd in {DoCompile, DoRun}:
+        b.withTree "cmd":
+          b.addSymbolDef "link"
+          b.addStrLit c.config.linker
+          b.addStrLit "-o"
+          b.addKeyw "output"
+          b.withTree "input":
+            b.addIntLit 0
+            b.addIntLit -1  # all inputs
+          b.withTree "argsext":
+            b.addStrLit ".linker.args"
+          if passL.len > 0:
+            for arg in passL.split(' '):
+              if arg.len > 0:
+                b.addStrLit arg
+          for i in c.passL:
+            b.addStrLit i
 
     # Build rules
     if c.cmd in {DoCompile, DoRun}:
@@ -429,47 +430,49 @@ proc generateFinalBuildFile(c: DepContext; commandLineArgsNifc: string; passC, p
           b.withTree "output":
             b.addStrLit c.config.nifcFile(n.files[0])
 
-      # Link executable
-      b.withTree "do":
-        b.addIdent "link"
-        # Input: all object files
-        var objFiles = initHashSet[string]()
+      var objFiles = initHashSet[string]()
+      if target != "wasm":
+        # Link executable
+        b.withTree "do":
+          b.addIdent "link"
+          # Input: all object files
+          for cfile in c.toBuild:
+            let obj = c.config.nifcachePath / cfile.obj
+            if not objFiles.containsOrIncl(obj):
+              b.withTree "input":
+                b.addStrLit obj
+          for v in c.nodes:
+            let obj = c.config.objFile(v.files[0])
+            if not objFiles.containsOrIncl(obj):
+              b.withTree "input":
+                b.addStrLit obj
+          b.withTree "output":
+            b.addStrLit c.config.exeFile(c.rootNode.files[0])
+
+        objFiles.clear()
+        # Build object files from C files with custom args
         for cfile in c.toBuild:
           let obj = c.config.nifcachePath / cfile.obj
           if not objFiles.containsOrIncl(obj):
-            b.withTree "input":
-              b.addStrLit obj
-        for v in c.nodes:
-          let obj = c.config.objFile(v.files[0])
-          if not objFiles.containsOrIncl(obj):
-            b.withTree "input":
-              b.addStrLit obj
-        b.withTree "output":
-          b.addStrLit c.config.exeFile(c.rootNode.files[0])
-
-      objFiles.clear()
-      # Build object files from C files with custom args
-      for cfile in c.toBuild:
-        let obj = c.config.nifcachePath / cfile.obj
-        if not objFiles.containsOrIncl(obj):
-          b.withTree "do":
-            b.addIdent "cc"
-            b.withTree "input":
-              b.addStrLit cfile.name
-            b.withTree "args":
-              b.addStrLit cfile.customArgs
-            b.withTree "output":
-              b.addStrLit obj
+            b.withTree "do":
+              b.addIdent "cc"
+              b.withTree "input":
+                b.addStrLit cfile.name
+              b.withTree "args":
+                b.addStrLit cfile.customArgs
+              b.withTree "output":
+                b.addStrLit obj
 
       for i, v in pairs c.nodes:
-        let obj = c.config.objFile(v.files[0])
-        if not objFiles.containsOrIncl(obj):
-          b.withTree "do":
-            b.addIdent "cc"
-            b.withTree "input":
-              b.addStrLit c.config.targetFile(v.files[0], target)
-            b.withTree "output":
-              b.addStrLit obj
+        if target != "wasm":
+          let obj = c.config.objFile(v.files[0])
+          if not objFiles.containsOrIncl(obj):
+            b.withTree "do":
+              b.addIdent "cc"
+              b.withTree "input":
+                b.addStrLit c.config.targetFile(v.files[0], target)
+              b.withTree "output":
+                b.addStrLit obj
 
         # Build C files from .c.nif files
         b.withTree "do":
@@ -857,4 +860,10 @@ proc buildGraph*(config: sink NifConfig; project: string; forceRebuild, silentMa
     let buildFinalFilename = generateFinalBuildFile(c, commandLineArgsNifc, passC, passL, target)
     exec nifmakeCommand & quoteShell(buildFinalFilename)
     if cmd == DoRun:
-      exec c.config.exeFile(c.rootNode.files[0]) & executableArgs
+      if target == "wasm":
+        let wasmFile = c.config.targetFile(c.rootNode.files[0], "wasm")
+        # XXX: We hardcode 'wasmtime' here as it's currently the most common WASI runner.
+        # This could be made configurable (e.g., via a --runner flag) in the future.
+        exec "wasmtime " & quoteShell(wasmFile) & executableArgs
+      else:
+        exec c.config.exeFile(c.rootNode.files[0]) & executableArgs

@@ -1,4 +1,5 @@
 import std/[tables]
+import ".." / lib / platform
 
 type
   Backend* = enum
@@ -21,6 +22,7 @@ type
   ConfigRef* {.acyclic.} = ref object ## every global configuration
     cCompiler*: SystemCC
     backend*: Backend
+    targetOS*: TSystemOS
     options*: set[Option]
     optimizeLevel*: OptimizeLevel
     nifcacheDir*: string

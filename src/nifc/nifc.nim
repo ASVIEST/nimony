@@ -11,6 +11,7 @@
 
 import std / [parseopt, strutils, os, osproc, tables, assertions, syncio]
 import codegen, noptions, mangler, symparser
+import ".." / lib / platform
 
 when defined(windows):
   import bat
@@ -157,6 +158,10 @@ proc handleCmdLine() =
           quit "'on', 'off' expected, but '$1' found" % val
       of "nimcache":
         s.config.nifcacheDir = val
+      of "os":
+        s.config.targetOS = platform.nameToOS(val)
+        if s.config.targetOS == osNone:
+          quit "unknown OS: " & val
       of "out", "o":
         s.config.outputFile = val
       else: writeHelp()
@@ -190,7 +195,7 @@ proc handleCmdLine() =
         else:
           for inp in items args:
             let outp = s.config.nifcacheDir / splitModulePath(inp).name & ".wasm"
-            generateWasm inp, outp
+            generateWasm inp, outp, s.config.targetOS
       of atNone:
         quit "targets are not specified"
 
