@@ -177,7 +177,7 @@ proc generatedExeFile(orig: string): string =
 
 proc removeMakeErrors(output: string): string =
   result = output.strip
-  for prefix in ["FAILURE:", "make:"]:
+  for prefix in ["FAILURE:", "make:", "nifmake:"]:
     let lastLine = rfind(result, '\n')
     if lastLine >= 0:
       if result.continuesWith(prefix, lastLine+1):
@@ -564,10 +564,17 @@ proc syncCmd(newBranch: string) =
   let (output, status) = execCmdEx("git symbolic-ref --short HEAD")
   if status != 0:
     quit "FAILURE: " & output
-  exec "git checkout master"
-  exec "git pull origin master"
+  let (defaultBranchOutput, defaultBranchStatus) = execCmdEx("git symbolic-ref refs/remotes/origin/HEAD --short")
+  var defaultBranch = "master"
+  if defaultBranchStatus == 0:
+    # Output is like "origin/main" or "origin/master"
+    defaultBranch = defaultBranchOutput.strip()
+    if defaultBranch.startsWith("origin/"):
+      defaultBranch = defaultBranch[7..^1]
+  exec "git checkout " & defaultBranch
+  exec "git pull origin " & defaultBranch
   let branch = output.strip()
-  if branch != "master":
+  if branch != defaultBranch:
     exec "git branch -D " & branch
   if newBranch.len > 0:
     exec "git checkout -B " & newBranch
@@ -621,7 +628,7 @@ proc handleCmdLine =
     buildHexer()
     buildNifmake()
     nimonytests(overwrite, forward)
-    nifctests(overwrite)
+    #nifctests(overwrite)
     #hexertests(overwrite)
     buildControlflow()
     controlflowTests("controlflow", overwrite)

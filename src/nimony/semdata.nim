@@ -60,10 +60,7 @@ type
     exported*: bool
     rootOwner*: SymId # generic root of owner type
 
-  SemPhase* = enum
-    SemcheckTopLevelSyms,
-    SemcheckSignatures,
-    SemcheckBodies
+  # SemPhase and ToplevelEntry are now in programs.nim
 
   MetaInfo* = object
     includedFiles*: seq[string] # will become part of the index file
@@ -76,9 +73,8 @@ type
   SemStmtCallback* = proc (c: var SemContext; dest: var TokenBuf; n: Cursor) {.nimcall.}
   SemGetSize* = proc(c: var SemContext; n: Cursor; strict=false): xint {.nimcall.}
 
-
   SemContext* = object
-    dest*: TokenBuf
+    #dest*: TokenBuf
     routine*: SemRoutine
     currentScope*: Scope
     g*: ProgramContext
@@ -133,6 +129,7 @@ type
     passC*: seq[string]
     genericInnerProcs*: HashSet[SymId] # these are special in that they must be instantiated in specific places
     expanded*: TokenBuf
+    forwardDecls*: Table[StrId, seq[SymId]] # forward declaration candidates by name
 
 proc typeToCanon*(buf: TokenBuf; start: int): string =
   result = ""
@@ -176,9 +173,6 @@ proc typeToCursor*(c: var SemContext; buf: TokenBuf; start: int): TypeCursor =
     #if newBuf.len == 0: newBuf.add dotToken(NoLineInfo)
     result = cursorAt(newBuf, 0)
     c.typeMem[key] = newBuf
-
-proc typeToCursor*(c: var SemContext; start: int): TypeCursor =
-  typeToCursor(c, c.dest, start)
 
 template emptyNode*(c: var SemContext): Cursor =
   # XXX find a better solution for this
